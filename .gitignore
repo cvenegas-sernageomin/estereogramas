@@ -1,0 +1,6 @@
+# Archivos de prueba locales
+dist/_test.html
+
+# Sistema
+Thumbs.db
+.DS_Store

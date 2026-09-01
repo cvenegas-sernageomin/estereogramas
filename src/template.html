@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Estereogramas · Análisis Estructural</title>
+
+  <!-- ░░ PWA (instalable en Android / iOS cuando se sirve por https) ░░ -->
+  <meta name="theme-color" content="#13293D" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Estereogramas" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%2313293D'/><circle cx='8' cy='8' r='6' fill='none' stroke='%231F6FB2' stroke-width='1.2'/><line x1='2' y1='8' x2='14' y2='8' stroke='%231F6FB2' stroke-width='0.8'/></svg>" />
+
+  <!-- ░░ Leaflet (mapa de ubicación de grupos) ░░ -->
+  <style>/*__LEAFLETCSS__*/</style>
+
+  <style>
+    * { box-sizing: border-box; }
+    html {
+      -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+    }
+    html, body { margin: 0; padding: 0; }
+    body { overscroll-behavior-y: none; }
+    #root { min-height: 100vh; min-height: 100dvh; }
+    button {
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+      -webkit-user-select: none; user-select: none;
+    }
+    [style*="overflow"] { -webkit-overflow-scrolling: touch; }
+    @media (max-width: 760px) {
+      input, select, textarea { font-size: 16px !important; }
+    }
+    #boot {
+      position: fixed; inset: 0; display: flex; align-items: center;
+      justify-content: center; flex-direction: column; gap: 14px;
+      background: #13293D; color: #EAF2FA;
+      font-family: system-ui, sans-serif; z-index: 9999;
+    }
+    #boot .t { font-size: 20px; font-weight: 700; }
+    #boot .s { font-size: 12px; font-family: monospace; letter-spacing: .08em; opacity: .7; }
+  </style>
+</head>
+<body>
+  <div id="boot">
+    <div class="t">Estereogramas</div>
+    <div class="s">cargando…</div>
+  </div>
+  <div id="root"></div>
+
+  <!-- ░░ Librerías embebidas (funciona sin internet) ░░ -->
+  <script>/*__REACT__*/</script>
+  <script>/*__REACTDOM__*/</script>
+  <script>/*__BABEL__*/</script>
+  <script>/*__LEAFLETJS__*/</script>
+
+  <!-- ░░ Aplicación ░░ -->
+  <script type="text/babel" data-presets="react">
+/*__APP__*/
+  </script>
+
+  <script type="text/babel" data-presets="react">
+    requestAnimationFrame(() => {
+      const b = document.getElementById("boot");
+      if (b) b.remove();
+    });
+  </script>
+
+  <!-- ░░ Registro del service worker (PWA) — solo con https o localhost ░░ -->
+  <script>
+    if ("serviceWorker" in navigator &&
+        (location.protocol === "https:" || location.hostname === "localhost")) {
+      window.addEventListener("load", function () {
+        navigator.serviceWorker.register("sw.js").catch(function () {});
+      });
+    }
+  </script>
+</body>
+</html>
