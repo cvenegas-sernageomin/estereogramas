@@ -133,6 +133,118 @@ function fisherStats(normales) {
   return { R, kappa, alpha95 };
 }
 
+// ─── cilindricidad del pliegue (tensor de orientación) ──────
+// Un pliegue es cilíndrico si todos los polos de estratificación caen sobre un
+// mismo círculo máximo (círculo π), cuyo polo es el eje de pliegue. Por eso esto
+// mira TODOS los polos: el plano axial, que sale de dos planos promedio, no puede
+// decir nada de cilindricidad (dos planos no paralelos siempre se cortan en una
+// línea y siempre tienen bisectriz — no queda residuo que medir).
+
+// Descomposición de Jacobi para matriz simétrica 3×3, copiada de
+// trazador-planos/src/app.jsx (ya probada ahí en el ajuste de planos por PCA).
+// Devuelve valores y vectores propios ordenados de mayor a menor.
+function jacobi3x3(A) {
+  const a = [
+    [A[0][0], A[0][1], A[0][2]],
+    [A[1][0], A[1][1], A[1][2]],
+    [A[2][0], A[2][1], A[2][2]],
+  ];
+  let V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+
+  for (let iter = 0; iter < 100; iter++) {
+    let p = 0, q = 1, max = Math.abs(a[0][1]);
+    if (Math.abs(a[0][2]) > max) { p = 0; q = 2; max = Math.abs(a[0][2]); }
+    if (Math.abs(a[1][2]) > max) { p = 1; q = 2; max = Math.abs(a[1][2]); }
+    if (max < 1e-12) break;
+
+    const tau = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+    const t = tau >= 0
+      ? 1 / (tau + Math.sqrt(1 + tau * tau))
+      : -1 / (-tau + Math.sqrt(1 + tau * tau));
+    const c = 1 / Math.sqrt(1 + t * t);
+    const s = t * c;
+
+    const app = a[p][p], aqq = a[q][q], apq = a[p][q];
+    a[p][p] = app - t * apq;
+    a[q][q] = aqq + t * apq;
+    a[p][q] = 0; a[q][p] = 0;
+    for (let r = 0; r < 3; r++) {
+      if (r !== p && r !== q) {
+        const arp = a[r][p], arq = a[r][q];
+        a[r][p] = a[p][r] = c * arp - s * arq;
+        a[r][q] = a[q][r] = s * arp + c * arq;
+      }
+      const vrp = V[r][p], vrq = V[r][q];
+      V[r][p] = c * vrp - s * vrq;
+      V[r][q] = s * vrp + c * vrq;
+    }
+  }
+
+  const eigs = [0, 1, 2].map((i) => ({ val: a[i][i], vec: [V[0][i], V[1][i], V[2][i]] }));
+  eigs.sort((x, y) => y.val - x.val);
+  return { values: eigs.map((e) => e.val), vectors: eigs.map((e) => e.vec) };
+}
+
+// Tensor de orientación T = (1/N) Σ vᵢvᵢᵀ. Los polos son datos AXIALES (un polo
+// y su antípoda son lo mismo) y el producto exterior vvᵀ no cambia con v → −v,
+// así que la convención de hemisferio no afecta el resultado.
+function orientationTensor(normales) {
+  const N = normales.length;
+  const T = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (const v of normales) {
+    for (let i = 0; i < 3; i++)
+      for (let j = 0; j < 3; j++) T[i][j] += v[i] * v[j];
+  }
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) T[i][j] /= N;
+  return T;
+}
+
+/**
+ * Cilindricidad a partir de los polos: residual angular respecto al círculo
+ * máximo de mejor ajuste, y parámetros K y C de Woodcock (1977).
+ *   K = ln(λ1/λ2) / ln(λ2/λ3)   K<1 guirnalda (cilíndrico) · K>1 cúmulo
+ *   C = ln(λ1/λ3)               intensidad de la fábrica
+ * El eje π (eje de pliegue) es el autovector del autovalor menor.
+ */
+function cylindricity(normales) {
+  const n = normales.length;
+  if (n < 4) return null;            // sin datos para ajustar una guirnalda
+
+  const { values, vectors } = jacobi3x3(orientationTensor(normales));
+  const [l1, l2, l3] = values;
+  const e3 = vectors[2];
+
+  // Desviación de cada polo respecto al plano de la guirnalda: 0 si vᵢ ⊥ e3
+  const desv = normales.map((v) =>
+    toDeg(Math.asin(clamp1(Math.abs(v[0] * e3[0] + v[1] * e3[1] + v[2] * e3[2])))));
+  const residualMedio = desv.reduce((a, d) => a + d, 0) / n;
+  const residualMax = Math.max(...desv);
+
+  // Casos degenerados: sin esto salen NaN/Infinity en pantalla
+  const EPS = 1e-9;
+  let K, C, tipo;
+  if (l1 - l3 < 1e-4) {
+    // λ1≈λ2≈λ3: distribución uniforme, no hay fábrica que describir
+    K = null; C = 0; tipo = "indefinido";
+  } else if (l3 < EPS) {
+    // Polos exactamente coplanares: guirnalda perfecta (K→0, C→∞)
+    K = 0; C = Math.log(l1 / EPS); tipo = "guirnalda";
+  } else if (Math.abs(Math.log(l2 / l3)) < EPS) {
+    K = null; C = Math.log(l1 / l3); tipo = "indefinido";
+  } else {
+    K = Math.log(l1 / l2) / Math.log(l2 / l3);
+    C = Math.log(l1 / l3);
+    tipo = K < 1 ? "guirnalda" : "cumulo";
+  }
+
+  const [trend, plunge] = vectorToTrendPlunge(e3);
+  return {
+    n, lambdas: [l1, l2, l3], K, C, tipo,
+    piAxis: { trend, plunge },
+    residualMedio, residualMax,
+  };
+}
+
 // ─── líneas: producto cruz (eje de pliegue) ──────────────────
 function crossNormalize(a, b) {
   const cx = a[1] * b[2] - a[2] * b[1];
@@ -708,6 +820,11 @@ function AxialPlaneFinder({ groups }) {
   const crossN = !sameGroup ? crossNormalize(n1, n2) : null;
   const axis = crossN ? (() => { const [trend, plunge] = vectorToTrendPlunge(crossN); return { trend, plunge }; })() : null;
 
+  // Cilindricidad sobre TODOS los polos de ambos limbos (respetando las casillas ✓),
+  // no sobre los dos planos promedio.
+  const polosPliegue = sameGroup ? [] : [...g1.usados, ...g2.usados].map((r) => ddDipToNormal(r.dd, r.dip));
+  const cil = polosPliegue.length ? cylindricity(polosPliegue) : null;
+
   const limb1Line = svgPoints(greatCircleXY(g1.ddMean, g1.dipMean));
   const limb2Line = svgPoints(greatCircleXY(g2.ddMean, g2.dipMean));
   const axialLine = axial ? svgPoints(greatCircleXY(axial.dd, axial.dip)) : null;
@@ -756,6 +873,61 @@ function AxialPlaneFinder({ groups }) {
               <span style={{ color: T.danger }}>●</span> Eje de pliegue — Trend {fmt(axis.trend)}° · Plunge {fmt(axis.plunge)}°
             </div>
           </div>
+        </div>
+      )}
+
+      {!sameGroup && <Cilindricidad cil={cil} />}
+    </div>
+  );
+}
+
+// Lectura de la cilindricidad. El plano axial no puede responder esto (dos planos
+// siempre se cortan y siempre tienen bisectriz); hay que mirar la dispersión de
+// todos los polos.
+function Cilindricidad({ cil }) {
+  if (!cil) {
+    return (
+      <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${T.panelAlt}`,
+                    fontSize: 12, color: T.text3 }}>
+        <b style={{ color: T.text2 }}>Cilindricidad</b> — se necesitan al menos 4 mediciones
+        entre los dos limbos.
+      </div>
+    );
+  }
+  const esCumulo = cil.tipo === "cumulo";
+  const pocos = cil.n < 6;
+  const lectura = cil.tipo === "guirnalda"
+    ? "Los polos definen una guirnalda: consistente con un pliegue cilíndrico."
+    : esCumulo
+      ? "Los polos se agrupan en vez de formar guirnalda."
+      : "Distribución sin fábrica definida.";
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${T.panelAlt}` }}>
+      <div style={{ fontWeight: 700, color: T.text2, fontSize: 12.5, marginBottom: 6 }}>
+        Cilindricidad <span style={{ fontWeight: 400, color: T.text3 }}>· {cil.n} polos de ambos limbos</span>
+      </div>
+      <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 12.5, fontFamily: MONO, color: T.text2 }}>
+        <div>Residual: medio {fmt(cil.residualMedio, 1)}° · máx {fmt(cil.residualMax, 1)}°</div>
+        <div>
+          Woodcock: K {cil.K == null ? "—" : fmt(cil.K, 2)}
+          {cil.K != null && ` (${cil.tipo === "guirnalda" ? "guirnalda" : "cúmulo"})`}
+          {" · "}C {fmt(cil.C, 2)}
+        </div>
+      </div>
+      <div style={{ fontSize: 12, color: T.text2, marginTop: 5 }}>{lectura}</div>
+
+      {esCumulo && (
+        <div style={{ fontSize: 12, color: "#8A5A00", background: "#FFF4DB", border: "1px solid #E8C77A",
+                      borderRadius: 6, padding: "6px 9px", marginTop: 7 }}>
+          K &gt; 1: los polos forman un cúmulo, así que el eje de pliegue queda mal constreñido
+          <b> aunque el residual sea bajo</b>. Con los dos limbos casi paralelos, los polos caen
+          cerca de cualquier círculo máximo que pase por el cúmulo.
+        </div>
+      )}
+      {pocos && !esCumulo && (
+        <div style={{ fontSize: 11.5, color: T.text3, marginTop: 5 }}>
+          Son pocas mediciones para afirmar cilindricidad.
         </div>
       )}
     </div>

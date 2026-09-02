@@ -84,6 +84,32 @@ El disco ocupa el 76% del lienzo para caber en la zona segura del recorte *maska
 Se evita la malla regular de meridianos/paralelos a propósito: a tamaño de icono se lee como un
 globo terráqueo en vez de un estereograma.
 
+## Cilindricidad del pliegue
+
+Dentro del buscador de plano axial, sobre **todos los polos** de los dos grupos-limbo (respetando
+las casillas ✓). El plano axial por sí solo no puede responder esto: sale de dos planos promedio,
+y dos planos no paralelos siempre se cortan en una línea y siempre tienen bisectriz — no queda
+residuo que medir.
+
+- **Residual angular** — cuánto se apartan los polos del círculo máximo de mejor ajuste (medio y
+  máximo).
+- **K y C de Woodcock (1977)** — `K = ln(λ1/λ2)/ln(λ2/λ3)`, K<1 guirnalda (cilíndrico), K>1
+  cúmulo; `C = ln(λ1/λ3)` intensidad. Autovalores del tensor de orientación `T = (1/N)Σvᵢvᵢᵀ`,
+  resuelto con `jacobi3x3` (traída de `trazador-planos`).
+
+Dos limitaciones que la app avisa o conviene tener presentes:
+
+1. **Un residual bajo no basta.** Si ambos limbos tienen casi la misma actitud, los polos forman un
+   cúmulo y caen cerca de *cualquier* círculo máximo que pase por él: el residual sale mínimo y el
+   eje de pliegue queda sin constreñir. Por eso se muestra K, y si K>1 la app lo advierte
+   explícitamente (caso real medido: residual 1.0° con K 6.3).
+2. **Con cobertura azimutal parcial, un pliegue cónico puede pasar por cilíndrico.** El residual se
+   mide contra el círculo *máximo* de mejor ajuste, y un círculo máximo puede abrazar bien un arco
+   corto de un círculo menor. Verificado: un cono de 65° (desviación real 25°) da residual 25.0° y
+   eje π exacto si los polos cubren los 360°, pero sólo 5.9° —y el eje π corrido 33°— si cubren un
+   arco de 140°. Distinguir cónico de cilíndrico con seguridad requiere ajustar un círculo menor,
+   que no está implementado.
+
 ## Mapa
 
 Fondo **satelital** (Esri World Imagery) por defecto, con conmutador a calles (OSM). Un marcador
