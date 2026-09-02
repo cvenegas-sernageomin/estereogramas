@@ -10,6 +10,19 @@ Reimplementa en JS/React (sin build de Node) la matemática de `estereo_engine.p
 [Stereonet 11 de Rick Allmendinger](https://www.rickallmendinger.net/stereonet) (diagrama de
 rosa, buscador de plano axial).
 
+## Campos
+
+Por medición: orientación (rumbo o dip direction según el toggle global), manteo, tipo,
+**cinemática** (texto libre: «Dextral inversa», «Sinistral», etc.), localidad, y coordenadas en
+**lat/lon o UTM Este/Norte** (con selector de zona 18S/19S/20S). Si una fila no trae lat/lon pero
+sí UTM, se convierte con proj4 para ubicarla en el mapa.
+
+Cada medición tiene una casilla **✓** que decide si entra en el promedio y en la estadística de
+Fisher. Las desmarcadas se siguen dibujando en el estereograma, punteadas y en gris, para no
+perder de vista qué se dejó fuera. Se pueden marcar desde la tabla o desde la caja
+«Mediciones usadas (n/N)» de cada panel, que además muestra rumbo/manteo y la cinemática de cada
+una.
+
 ## Herramientas por grupo (localidad + tipo)
 
 - **Planos** — grandes círculos de cada medición + plano promedio.
@@ -71,8 +84,12 @@ El disco ocupa el 76% del lienzo para caber en la zona segura del recorte *maska
 Se evita la malla regular de meridianos/paralelos a propósito: a tamaño de icono se lee como un
 globo terráqueo en vez de un estereograma.
 
-## Pendientes conocidos (no bloquean v1)
+## Mapa
 
-- Conversión UTM→lat/lon (hoy Este/Norte es solo informativo).
+Fondo **satelital** (Esri World Imagery) por defecto, con conmutador a calles (OSM). Un marcador
+por grupo en su centroide; al hacer clic salta al panel correspondiente y lo resalta.
+
+## Pendientes conocidos
+
 - Marcar puntos directamente en el mapa (hoy solo tabla/CSV).
-- Iconos del manifest son un placeholder reutilizado de otro proyecto.
+- Sin soporte .xlsx (exportar a CSV desde Excel).

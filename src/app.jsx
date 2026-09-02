@@ -242,7 +242,9 @@ function CompassFrame() {
 }
 
 function RoseDiagram({ group }) {
-  const bins = useMemo(() => buildRoseBins(group.items, 10), [group.items]);
+  // Sólo las mediciones marcadas, para que el histograma sea coherente con la
+  // línea de rumbo promedio que se dibuja encima.
+  const bins = useMemo(() => buildRoseBins(group.usados, 10), [group.usados]);
   const meanLine = group.strikeMean != null
     ? [compassToXY(group.strikeMean, 1), compassToXY(group.strikeMean + 180, 1)]
     : null;
@@ -263,8 +265,26 @@ function RoseDiagram({ group }) {
   );
 }
 
+// ─── UTM ↔ WGS84 (proj4, mismo enfoque que trazador-planos) ──
+const ZONAS_UTM = {
+  "18S": "+proj=utm +zone=18 +south +datum=WGS84 +units=m +no_defs",
+  "19S": "+proj=utm +zone=19 +south +datum=WGS84 +units=m +no_defs",
+  "20S": "+proj=utm +zone=20 +south +datum=WGS84 +units=m +no_defs",
+};
+const WGS84 = "+proj=longlat +datum=WGS84 +no_defs";
+
+function utmToLatLon(E, N, zona) {
+  try {
+    const [lon, lat] = proj4(ZONAS_UTM[zona] || ZONAS_UTM["19S"], WGS84, [E, N]);
+    if (!isFinite(lat) || !isFinite(lon)) return null;
+    return { lat, lon };
+  } catch (e) {
+    return null;
+  }
+}
+
 // ─── agrupamiento por localidad + tipo (equivalente a run_analysis) ─
-function computeGroups(measurements, convencion) {
+function computeGroups(measurements, convencion, zonaUtm) {
   const resolved = measurements.map((m) => {
     const manteo = parseFloat(m.manteo);
     const orientRaw = parseFloat(m.orientacion);
@@ -274,11 +294,23 @@ function computeGroups(measurements, convencion) {
     const tipo = (m.tipo || "").trim() || "SIN_TIPO";
     const latN = m.lat !== "" && m.lat != null ? parseFloat(m.lat) : NaN;
     const lonN = m.lon !== "" && m.lon != null ? parseFloat(m.lon) : NaN;
+    let lat = isNaN(latN) ? null : latN;
+    let lon = isNaN(lonN) ? null : lonN;
+    // Si no hay lat/lon pero sí UTM, se convierte: así un CSV con sólo Este/Norte
+    // ubica igual los grupos en el mapa.
+    if (lat == null || lon == null) {
+      const E = m.este !== "" && m.este != null ? parseFloat(m.este) : NaN;
+      const N = m.norte !== "" && m.norte != null ? parseFloat(m.norte) : NaN;
+      if (!isNaN(E) && !isNaN(N)) {
+        const ll = utmToLatLon(E, N, zonaUtm);
+        if (ll) { lat = ll.lat; lon = ll.lon; }
+      }
+    }
     return {
       ...m, localidad, tipo, valid,
       dd, dip: valid ? manteo : null,
-      lat: isNaN(latN) ? null : latN,
-      lon: isNaN(lonN) ? null : lonN,
+      usar: m.usar !== false,          // por defecto entra en el promedio
+      lat, lon,
     };
   });
 
@@ -292,21 +324,26 @@ function computeGroups(measurements, convencion) {
 
   const groups = [];
   for (const g of groupsMap.values()) {
-    const normales = g.items.map((r) => ddDipToNormal(r.dd, r.dip));
+    // El promedio y Fisher salen SÓLO de las mediciones marcadas; las demás se
+    // siguen dibujando (atenuadas) para poder ver qué se dejó fuera.
+    const usados = g.items.filter((r) => r.usar);
+    const normales = usados.map((r) => ddDipToNormal(r.dd, r.dip));
     const mn = meanNormal(normales);
     let ddMean = null, dipMean = null, strikeMean = null;
     if (mn) { [ddMean, dipMean] = normalToDdDip(mn); strikeMean = ddToStrike(ddMean); }
     const { R, kappa, alpha95 } = fisherStats(normales);
-    const withCoords = g.items.filter((r) => r.lat != null && r.lon != null);
+    const withCoords = usados.filter((r) => r.lat != null && r.lon != null);
     const centroid = withCoords.length
       ? {
           lat: withCoords.reduce((a, r) => a + r.lat, 0) / withCoords.length,
           lon: withCoords.reduce((a, r) => a + r.lon, 0) / withCoords.length,
         }
       : null;
+    const cinematicas = [...new Set(usados.map((r) => (r.cinematica || "").trim()).filter(Boolean))];
     groups.push({
-      key: g.key, localidad: g.localidad, tipo: g.tipo, items: g.items, n: g.items.length,
-      ddMean, dipMean, strikeMean, R, kappa, alpha95, centroid,
+      key: g.key, localidad: g.localidad, tipo: g.tipo,
+      items: g.items, usados, n: usados.length, nTotal: g.items.length,
+      ddMean, dipMean, strikeMean, R, kappa, alpha95, centroid, cinematicas,
     });
   }
   groups.sort((a, b) => a.localidad.localeCompare(b.localidad) || a.tipo.localeCompare(b.tipo));
@@ -333,6 +370,7 @@ const CAMPOS_CSV = [
   { key: "orientacion", label: "Orientación (rumbo o DD)", req: true },
   { key: "manteo",      label: "Manteo",                   req: true },
   { key: "tipo",        label: "Tipo",                     req: false },
+  { key: "cinematica",  label: "Cinemática / descripción", req: false },
   { key: "localidad",   label: "Localidad",                req: false },
   { key: "lat",         label: "Lat",                      req: false },
   { key: "lon",         label: "Lon",                      req: false },
@@ -347,6 +385,7 @@ const SINONIMOS_CSV = {
   orientacion: ["orientacion", "orientación", "rumbo", "dd", "dip_direction", "dipdirection", "direccion", "dirección", "strike", "azimut", "azimuth"],
   manteo: ["manteo", "dip", "buzamiento", "inclinacion", "inclinación"],
   tipo: ["tipo", "tipo_estructura", "estructura"],
+  cinematica: ["cinematica", "cinemática", "kinematics", "movimiento", "sentido", "desplazamiento", "descripcion", "descripción", "obs", "observaciones", "nota", "notas"],
   localidad: ["localidad", "sitio", "estacion", "estación", "ubicacion", "ubicación", "sector"],
   lat: ["lat", "latitud", "latitude", "y_wgs84"],
   lon: ["lon", "lng", "long", "longitud", "longitude", "x_wgs84"],
@@ -391,6 +430,7 @@ function rowsToMeasurements(rows, mapping) {
     orientacion: csvNum(pick(cols, mapping.orientacion)),
     manteo: csvNum(pick(cols, mapping.manteo)),
     tipo: pick(cols, mapping.tipo),
+    cinematica: pick(cols, mapping.cinematica),
     localidad: pick(cols, mapping.localidad),
     lat: csvNum(pick(cols, mapping.lat)),
     lon: csvNum(pick(cols, mapping.lon)),
@@ -399,14 +439,16 @@ function rowsToMeasurements(rows, mapping) {
   }));
 }
 
+// Plantilla: trae lat/lon y también este/norte (UTM) para mostrar las dos formas.
+// Se puede borrar el par que no se use; basta con uno.
 const PLANTILLA_CSV = [
-  "localidad,tipo,rumbo,manteo,lat,lon",
-  "Cerro Alto,Estratificación,31,35,-33.45000,-70.65000",
-  "Cerro Alto,Estratificación,35,32,-33.45100,-70.65100",
-  "Cerro Alto,Estratificación,28,38,-33.44900,-70.64900",
-  "Quebrada Sur,Falla,115,68,-33.52000,-70.72000",
-  "Quebrada Sur,Falla,120,70,-33.52100,-70.72100",
-  "Quebrada Sur,Diaclasa,10,80,-33.52200,-70.71900",
+  "localidad,tipo,cinematica,rumbo,manteo,lat,lon,este,norte",
+  "Cerro Alto,Estratificación,,31,35,-33.45000,-70.65000,346500,6298000",
+  "Cerro Alto,Estratificación,,35,32,-33.45100,-70.65100,346410,6297890",
+  "Cerro Alto,Estratificación,,28,38,-33.44900,-70.64900,346590,6298110",
+  "Quebrada Sur,Falla,Dextral inversa,115,68,-33.52000,-70.72000,340000,6290300",
+  "Quebrada Sur,Falla,Dextral,120,70,-33.52100,-70.72100,339910,6290190",
+  "Quebrada Sur,Diaclasa,,10,80,-33.52200,-70.71900,340090,6290080",
   "",
 ].join("\n");
 
@@ -428,6 +470,7 @@ function descargarPlantilla() {
 // ═══════════════════════════════════════════════════════════════
 const CHILE_CENTER = [-33.5, -70.7];
 const CHILE_ZOOM = 6;
+const ESRI_IMAGERY = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
 // Localidad y tipo los escribe el usuario (o vienen de un CSV ajeno) y se
 // interpolan en el HTML del popup de Leaflet: escapar antes de inyectar.
@@ -445,13 +488,33 @@ function MapPanel({ groups, onMarkerClick }) {
   useEffect(() => {
     if (mapObj.current || !mapDiv.current) return;
     const map = L.map(mapDiv.current, { center: CHILE_CENTER, zoom: CHILE_ZOOM });
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    // Satelital por defecto (mismo servicio que usa trazador-planos), con la
+    // opción de calles. maxNativeZoom evita tiles grises al pasar z18.
+    const satelital = L.tileLayer(ESRI_IMAGERY, {
+      attribution: "Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+      maxZoom: 21, maxNativeZoom: 18,
+    }).addTo(map);
+    const calles = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "&copy; OpenStreetMap contributors",
       maxZoom: 19,
-    }).addTo(map);
+    });
+    // collapsed:false — el icono del control (images/layers.png) no existe en un
+    // HTML autocontenido; expandido se ven las dos opciones y no se pide la imagen.
+    L.control.layers({ "Satelital": satelital, "Calles": calles }, null,
+                     { position: "topright", collapsed: false }).addTo(map);
     mapObj.current = map;
     // Leaflet en un contenedor que aún no tiene tamaño final queda con tiles a medio cargar.
     requestAnimationFrame(() => requestAnimationFrame(() => map.invalidateSize()));
+
+    // Si el contenedor cambia de tamaño después (rotar el teléfono, redimensionar
+    // la ventana), Leaflet sigue con las medidas viejas y deja franjas grises.
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => map.invalidateSize());
+    });
+    ro.observe(mapDiv.current);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
   }, []);
 
   useEffect(() => {
@@ -487,11 +550,15 @@ function MapPanel({ groups, onMarkerClick }) {
 // ═══════════════════════════════════════════════════════════════
 function fmt(n, d = 0) { return n == null || isNaN(n) ? "—" : n.toFixed(d); }
 
-function StereonetPanel({ group, highlighted, setRef }) {
-  const planeLines = group.items.map((r) => svgPoints(greatCircleXY(r.dd, r.dip)));
+function StereonetPanel({ group, highlighted, setRef, onToggleUsar }) {
+  const [verLista, setVerLista] = useState(false);
+  // Se dibujan todas, pero las excluidas van atenuadas: hay que poder ver qué
+  // se dejó fuera del promedio.
+  const planeLines = group.items.map((r) => ({ pts: svgPoints(greatCircleXY(r.dd, r.dip)), usar: r.usar }));
   const meanPlaneLine = group.ddMean != null ? svgPoints(greatCircleXY(group.ddMean, group.dipMean)) : null;
-  const polePts = group.items.map((r) => equalAreaProject(mod360(r.dd + 180), 90 - r.dip));
+  const polePts = group.items.map((r) => ({ p: equalAreaProject(mod360(r.dd + 180), 90 - r.dip), usar: r.usar }));
   const meanPole = group.ddMean != null ? equalAreaProject(mod360(group.ddMean + 180), 90 - group.dipMean) : null;
+  const excluidas = group.nTotal - group.n;
 
   return (
     <div ref={setRef} style={{
@@ -504,15 +571,22 @@ function StereonetPanel({ group, highlighted, setRef }) {
           <div style={{ fontWeight: 700, fontSize: 14, color: T.text }}>{group.localidad}</div>
           <div style={{ fontSize: 11.5, color: T.text3 }}>{group.tipo}</div>
         </div>
-        <div style={{ fontSize: 11, color: T.text2, fontFamily: MONO, textAlign: "right" }}>n={group.n}</div>
+        <div style={{ fontSize: 11, color: T.text2, fontFamily: MONO, textAlign: "right" }}>
+          n={group.n}
+          {excluidas > 0 && <span style={{ color: T.text3 }}> de {group.nTotal}</span>}
+        </div>
       </div>
       <div style={{ display: "flex", gap: 10 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 10, color: T.text3, textAlign: "center", marginBottom: 2 }}>PLANOS</div>
           <svg viewBox="-1.3 -1.3 2.6 2.6" style={{ width: "100%", display: "block" }}>
             <SchmidtNetGrid />
-            {planeLines.map((pts, i) => (
-              <polyline key={i} points={pts} fill="none" stroke={T.accent} strokeWidth="0.01" opacity="0.55" />
+            {planeLines.map((l, i) => (
+              <polyline key={i} points={l.pts} fill="none"
+                        stroke={l.usar ? T.accent : T.text3}
+                        strokeWidth="0.01"
+                        strokeDasharray={l.usar ? undefined : "0.03 0.03"}
+                        opacity={l.usar ? 0.55 : 0.4} />
             ))}
             {meanPlaneLine && <polyline points={meanPlaneLine} fill="none" stroke={T.danger} strokeWidth="0.022" />}
           </svg>
@@ -521,8 +595,11 @@ function StereonetPanel({ group, highlighted, setRef }) {
           <div style={{ fontSize: 10, color: T.text3, textAlign: "center", marginBottom: 2 }}>POLOS</div>
           <svg viewBox="-1.3 -1.3 2.6 2.6" style={{ width: "100%", display: "block" }}>
             <SchmidtNetGrid />
-            {polePts.map(([x, y], i) => (
-              <circle key={i} cx={x} cy={-y} r="0.02" fill={T.accent} opacity="0.6" />
+            {polePts.map((d, i) => (
+              <circle key={i} cx={d.p[0]} cy={-d.p[1]} r="0.02"
+                      fill={d.usar ? T.accent : "none"}
+                      stroke={d.usar ? "none" : T.text3} strokeWidth="0.008"
+                      opacity={d.usar ? 0.6 : 0.7} />
             ))}
             {meanPole && <circle cx={meanPole[0]} cy={-meanPole[1]} r="0.04" fill={T.danger} stroke="#fff" strokeWidth="0.008" />}
           </svg>
@@ -543,6 +620,48 @@ function StereonetPanel({ group, highlighted, setRef }) {
         <div>&kappa; {group.kappa != null ? fmt(group.kappa) : "—"}</div>
         <div>&alpha;95 {group.alpha95 != null ? fmt(group.alpha95, 1) + "°" : "—"}</div>
         <div>{group.centroid ? `${fmt(group.centroid.lat, 4)}, ${fmt(group.centroid.lon, 4)}` : "sin coords"}</div>
+      </div>
+
+      {group.cinematicas.length > 0 && (
+        <div style={{ marginTop: 6, fontSize: 11, color: T.text2 }}>
+          <span style={{ color: T.text3 }}>Cinemática: </span>{group.cinematicas.join(" · ")}
+        </div>
+      )}
+
+      <div style={{ marginTop: 8, borderTop: `1px solid ${T.panelAlt}`, paddingTop: 6 }}>
+        <button onClick={() => setVerLista(!verLista)}
+                style={{ ...btnStyle, padding: "3px 8px", fontSize: 11, fontWeight: 500 }}>
+          {verLista ? "▾" : "▸"} Mediciones usadas ({group.n}/{group.nTotal})
+        </button>
+        {verLista && (
+          <div style={{ marginTop: 6, maxHeight: 190, overflowY: "auto",
+                        border: `1px solid ${T.border}`, borderRadius: 6, padding: 6 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+              <button style={{ ...btnStyle, padding: "2px 7px", fontSize: 10.5, fontWeight: 500 }}
+                      onClick={() => group.items.forEach((r) => onToggleUsar(r.id, true))}>Todas</button>
+              <button style={{ ...btnStyle, padding: "2px 7px", fontSize: 10.5, fontWeight: 500 }}
+                      onClick={() => group.items.forEach((r) => onToggleUsar(r.id, false))}>Ninguna</button>
+            </div>
+            {group.items.map((r) => (
+              <label key={r.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0",
+                                         fontSize: 11.5, fontFamily: MONO,
+                                         color: r.usar ? T.text2 : T.text3 }}>
+                <input type="checkbox" checked={r.usar}
+                       onChange={(e) => onToggleUsar(r.id, e.target.checked)} />
+                <span style={{ minWidth: 96 }}>
+                  {fmt(ddToStrike(r.dd))}° / {fmt(r.dip)}°
+                </span>
+                <span style={{ fontFamily: SANS, fontSize: 11, flex: 1, minWidth: 0, overflow: "hidden",
+                               textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {(r.cinematica || "").trim()}
+                </span>
+              </label>
+            ))}
+            <div style={{ fontSize: 10, color: T.text3, marginTop: 4 }}>
+              Rumbo/manteo. Las desmarcadas se dibujan punteadas y no entran en el promedio.
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -762,14 +881,16 @@ function rowInvalid(m) {
   return isNaN(o) || isNaN(d) || d === 0;
 }
 
-function MeasurementsTable({ measurements, setMeasurements, convencion, setConvencion, showUtm, setShowUtm }) {
+function MeasurementsTable({ measurements, setMeasurements, convencion, setConvencion,
+                            showUtm, setShowUtm, zonaUtm, setZonaUtm }) {
   const update = (id, field, value) =>
     setMeasurements((prev) => prev.map((m) => (m.id === id ? { ...m, [field]: value } : m)));
   const addRow = () =>
     setMeasurements((prev) => [
       ...prev,
       { id: (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()),
-        orientacion: "", manteo: "", tipo: "", localidad: "", lat: "", lon: "", este: "", norte: "" },
+        orientacion: "", manteo: "", tipo: "", cinematica: "", localidad: "",
+        lat: "", lon: "", este: "", norte: "", usar: true },
     ]);
   const delRow = (id) => setMeasurements((prev) => prev.filter((m) => m.id !== id));
   const fileInput = useRef(null);
@@ -818,6 +939,13 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
           <input type="checkbox" checked={showUtm} onChange={(e) => setShowUtm(e.target.checked)} />
           mostrar UTM
         </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: T.text2 }}
+               title="Zona con la que se convierten Este/Norte a lat/lon cuando no hay coordenadas geográficas">
+          Zona
+          <select style={{ ...selectStyle, padding: "4px 6px" }} value={zonaUtm} onChange={(e) => setZonaUtm(e.target.value)}>
+            {Object.keys(ZONAS_UTM).map((z) => <option key={z} value={z}>{z}</option>)}
+          </select>
+        </label>
         <div style={{ flex: 1 }} />
         <button style={btnStyle} onClick={descargarPlantilla}>Plantilla CSV</button>
         <button style={btnStyle} onClick={() => fileInput.current.click()}>Importar CSV</button>
@@ -840,12 +968,14 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
         />
       )}
       <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: showUtm ? 900 : 700 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: showUtm ? 1080 : 860 }}>
           <thead>
             <tr style={{ fontSize: 10.5, color: T.text3, textAlign: "left" }}>
+              <th style={{ padding: "4px 4px" }} title="Incluir en el promedio y en la estadística">✓</th>
               <th style={{ padding: "4px 6px" }}>{convencion === "strike" ? "Rumbo°" : "DD°"}</th>
               <th style={{ padding: "4px 6px" }}>Manteo°</th>
               <th style={{ padding: "4px 6px" }}>Tipo</th>
+              <th style={{ padding: "4px 6px" }}>Cinemática</th>
               <th style={{ padding: "4px 6px" }}>Localidad</th>
               <th style={{ padding: "4px 6px" }}>Lat</th>
               <th style={{ padding: "4px 6px" }}>Lon</th>
@@ -858,11 +988,17 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
             {measurements.map((m) => {
               const invalid = rowInvalid(m);
               return (
-                <tr key={m.id} style={{ background: invalid ? "#FBEAEA" : "transparent" }}
+                <tr key={m.id} style={{ background: invalid ? "#FBEAEA" : "transparent", opacity: m.usar === false ? 0.5 : 1 }}
                     title={invalid ? "Orientación o manteo no válidos (manteo 0 se trata como sin dato, igual que el script ArcGIS) — esta fila no entra en ningún estereograma" : ""}>
+                  <td style={{ padding: 3, textAlign: "center" }}>
+                    <input type="checkbox" checked={m.usar !== false}
+                           onChange={(e) => update(m.id, "usar", e.target.checked)}
+                           title="Incluir en el promedio y en la estadística" />
+                  </td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.orientacion} onChange={(e) => update(m.id, "orientacion", e.target.value)} /></td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.manteo} onChange={(e) => update(m.id, "manteo", e.target.value)} /></td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.tipo} onChange={(e) => update(m.id, "tipo", e.target.value)} /></td>
+                  <td style={{ padding: 3 }}><input style={inputStyle} value={m.cinematica || ""} onChange={(e) => update(m.id, "cinematica", e.target.value)} /></td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.localidad} onChange={(e) => update(m.id, "localidad", e.target.value)} /></td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.lat} onChange={(e) => update(m.id, "lat", e.target.value)} /></td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.lon} onChange={(e) => update(m.id, "lon", e.target.value)} /></td>
@@ -885,12 +1021,12 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
 // DATOS DE EJEMPLO
 // ═══════════════════════════════════════════════════════════════
 const SAMPLE_DATA = [
-  { id: "s1", orientacion: 120, manteo: 35, tipo: "Estratificación", localidad: "Cerro Alto", lat: -33.450, lon: -70.650, este: "", norte: "" },
-  { id: "s2", orientacion: 125, manteo: 32, tipo: "Estratificación", localidad: "Cerro Alto", lat: -33.451, lon: -70.651, este: "", norte: "" },
-  { id: "s3", orientacion: 118, manteo: 38, tipo: "Estratificación", localidad: "Cerro Alto", lat: -33.449, lon: -70.649, este: "", norte: "" },
-  { id: "s4", orientacion: 200, manteo: 70, tipo: "Falla", localidad: "Quebrada Sur", lat: -33.520, lon: -70.720, este: "", norte: "" },
-  { id: "s5", orientacion: 205, manteo: 68, tipo: "Falla", localidad: "Quebrada Sur", lat: -33.521, lon: -70.721, este: "", norte: "" },
-  { id: "s6", orientacion: 210, manteo: 65, tipo: "Falla", localidad: "Quebrada Sur", lat: -33.522, lon: -70.719, este: "", norte: "" },
+  { id: "s1", orientacion: 120, manteo: 35, tipo: "Estratificación", cinematica: "", localidad: "Cerro Alto", lat: -33.450, lon: -70.650, este: "", norte: "", usar: true },
+  { id: "s2", orientacion: 125, manteo: 32, tipo: "Estratificación", cinematica: "", localidad: "Cerro Alto", lat: -33.451, lon: -70.651, este: "", norte: "", usar: true },
+  { id: "s3", orientacion: 118, manteo: 38, tipo: "Estratificación", cinematica: "", localidad: "Cerro Alto", lat: -33.449, lon: -70.649, este: "", norte: "", usar: true },
+  { id: "s4", orientacion: 200, manteo: 70, tipo: "Falla", cinematica: "Dextral inversa", localidad: "Quebrada Sur", lat: -33.520, lon: -70.720, este: "", norte: "", usar: true },
+  { id: "s5", orientacion: 205, manteo: 68, tipo: "Falla", cinematica: "Dextral", localidad: "Quebrada Sur", lat: -33.521, lon: -70.721, este: "", norte: "", usar: true },
+  { id: "s6", orientacion: 210, manteo: 65, tipo: "Falla", cinematica: "Dextral", localidad: "Quebrada Sur", lat: -33.522, lon: -70.719, este: "", norte: "", usar: true },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -900,10 +1036,16 @@ function App() {
   const [convencion, setConvencion] = useState("dd");
   const [measurements, setMeasurements] = useState(SAMPLE_DATA);
   const [showUtm, setShowUtm] = useState(false);
+  const [zonaUtm, setZonaUtm] = useState("19S");
   const [highlightKey, setHighlightKey] = useState(null);
   const panelRefs = useRef({});
 
-  const { groups } = useMemo(() => computeGroups(measurements, convencion), [measurements, convencion]);
+  const { groups } = useMemo(
+    () => computeGroups(measurements, convencion, zonaUtm),
+    [measurements, convencion, zonaUtm]);
+
+  const toggleUsar = (id, valor) =>
+    setMeasurements((prev) => prev.map((m) => (m.id === id ? { ...m, usar: valor } : m)));
 
   const handleMarkerClick = (key) => {
     setHighlightKey(key);
@@ -926,6 +1068,8 @@ function App() {
           setConvencion={setConvencion}
           showUtm={showUtm}
           setShowUtm={setShowUtm}
+          zonaUtm={zonaUtm}
+          setZonaUtm={setZonaUtm}
         />
 
         {groups.length === 0 ? (
@@ -940,6 +1084,7 @@ function App() {
                 group={g}
                 highlighted={highlightKey === g.key}
                 setRef={(el) => { panelRefs.current[g.key] = el; }}
+                onToggleUsar={toggleUsar}
               />
             ))}
           </div>

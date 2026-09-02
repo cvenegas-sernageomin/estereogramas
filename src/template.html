@@ -42,6 +42,10 @@
       background: #13293D; color: #EAF2FA;
       font-family: system-ui, sans-serif; z-index: 9999;
     }
+    /* El CSS de Leaflet pide images/layers.png por ruta relativa; en un HTML
+       autocontenido esa carpeta no existe y daba un 404. */
+    .leaflet-control-layers-toggle { background-image: none !important; }
+    .leaflet-control-layers { font-size: 12px; }
     #boot .t { font-size: 20px; font-weight: 700; }
     #boot .s { font-size: 12px; font-family: monospace; letter-spacing: .08em; opacity: .7; }
   </style>
@@ -58,6 +62,7 @@
   <script>/*__REACTDOM__*/</script>
   <script>/*__BABEL__*/</script>
   <script>/*__LEAFLETJS__*/</script>
+  <script>/*__PROJ4__*/</script>
 
   <!-- ░░ Aplicación ░░ -->
   <script type="text/babel" data-presets="react">

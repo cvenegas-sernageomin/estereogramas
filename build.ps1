@@ -21,6 +21,7 @@ $reactDom   = Read-Text (Join-Path $root "vendor\react-dom.production.min.js")
 $babel      = Read-Text (Join-Path $root "vendor\babel.min.js")
 $leafletJs  = Read-Text (Join-Path $root "vendor\leaflet.min.js")
 $leafletCss = Read-Text (Join-Path $root "vendor\leaflet.min.css")
+$proj4      = Read-Text (Join-Path $root "vendor\proj4.min.js")
 
 # .Replace() es reemplazo literal (ordinal): no interpreta $1, \, etc.
 $out = $template
@@ -28,6 +29,7 @@ $out = $out.Replace("/*__REACT__*/",      (Protect-Script $react))
 $out = $out.Replace("/*__REACTDOM__*/",   (Protect-Script $reactDom))
 $out = $out.Replace("/*__BABEL__*/",      (Protect-Script $babel))
 $out = $out.Replace("/*__LEAFLETJS__*/",  (Protect-Script $leafletJs))
+$out = $out.Replace("/*__PROJ4__*/",      (Protect-Script $proj4))
 $out = $out.Replace("/*__LEAFLETCSS__*/", $leafletCss)
 $out = $out.Replace("/*__APP__*/",        (Protect-Script $app))
 
