@@ -23,6 +23,26 @@ perder de vista qué se dejó fuera. Se pueden marcar desde la tabla o desde la 
 «Mediciones usadas (n/N)» de cada panel, que además muestra rumbo/manteo y la cinemática de cada
 una.
 
+## Estrías (lineaciones sobre el plano)
+
+Cada medición puede llevar una estría con su **trend y plunge** propios (columnas en la tabla y en
+el CSV). Se dibujan como puntos naranjos sobre el plano al que pertenecen, en la vista PLANOS.
+
+- **Promedio** por grupo, con su dispersión angular. Las estrías son datos **axiales** (una línea y
+  su opuesta son la misma), así que el promedio usa el autovector principal del tensor de
+  orientación, no un promedio vectorial simple: con estrías casi opuestas el vectorial se cancela.
+  Se dibuja como un anillo naranjo.
+- **Control de consistencia**: una estría debe yacer en su plano de falla. La app calcula la
+  desviación y avisa si alguna se aparta más de 10° — normalmente significa un trend/plunge o un
+  manteo mal anotado.
+
+## Selección
+
+Al hacer clic en un plano o un polo del estereograma se resalta esa medición y la app salta a su
+fila en la tabla (y al revés: al hacer clic en la fila se destaca en el estereograma). Los trazos
+tienen una zona de clic más ancha que la línea visible, porque acertarle a una línea de 1 px con el
+dedo es imposible.
+
 ## Herramientas por grupo (localidad + tipo)
 
 - **Planos** — grandes círculos de cada medición + plano promedio.

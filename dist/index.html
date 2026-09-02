@@ -1054,6 +1054,8 @@ const T = {
   inputBg:  "#FFFFFF",
   inputBd:  "#B7C4D4",
   gridLine: "#C3CEDB",
+  estria:   "#C77A28",   // lineaciones (estrías), distinto del azul y del rojo
+  selec:    "#7C3AED",   // elemento seleccionado en el estereograma
 };
 const SANS = "system-ui, -apple-system, sans-serif";
 const MONO = '"SF Mono", "Roboto Mono", Menlo, Consolas, monospace';
@@ -1289,6 +1291,15 @@ function crossNormalize(a, b) {
   return [cx / norm, cy / norm, cz / norm];
 }
 
+// Vector unitario de una LÍNEA a partir de trend/plunge (x=este, y=norte, z=abajo).
+// Inversa de vectorToTrendPlunge; se usa para las estrías.
+function trendPlungeToVector(trend, plunge) {
+  const t = toRad(trend), p = toRad(plunge);
+  return [Math.cos(p) * Math.sin(t), Math.cos(p) * Math.cos(t), Math.sin(p)];
+}
+
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+
 // Trend/plunge de una LÍNEA (no el polo de un plano: el plunge es directo,
 // sin el complemento a 90° que usa normalToDdDip para el manteo de un plano).
 function vectorToTrendPlunge(v) {
@@ -1452,11 +1463,25 @@ function computeGroups(measurements, convencion, zonaUtm) {
         if (ll) { lat = ll.lat; lon = ll.lon; }
       }
     }
+    // Estría (lineación sobre el plano de falla): trend/plunge propios.
+    // Se controla que realmente yazca en el plano — si la estría es correcta,
+    // es perpendicular al polo, así que la desviación debería ser ~0°.
+    const stTrend = parseFloat(m.striaTrend);
+    const stPlunge = parseFloat(m.striaPlunge);
+    let stria = null;
+    if (valid && !isNaN(stTrend) && !isNaN(stPlunge)) {
+      const vec = trendPlungeToVector(stTrend, stPlunge);
+      const ang = toDeg(Math.acos(clamp1(Math.abs(dot3(vec, ddDipToNormal(dd, manteo))))));
+      stria = {
+        trend: mod360(stTrend), plunge: stPlunge, vec,
+        desviacion: Math.abs(90 - ang),
+      };
+    }
     return {
       ...m, localidad, tipo, valid,
       dd, dip: valid ? manteo : null,
       usar: m.usar !== false,          // por defecto entra en el promedio
-      lat, lon,
+      lat, lon, stria,
     };
   });
 
@@ -1486,10 +1511,30 @@ function computeGroups(measurements, convencion, zonaUtm) {
         }
       : null;
     const cinematicas = [...new Set(usados.map((r) => (r.cinematica || "").trim()).filter(Boolean))];
+
+    // Promedio de estrías. Son datos AXIALES (una línea y su opuesta son la
+    // misma), así que un promedio vectorial simple se cancelaría con estrías
+    // casi opuestas: se usa el autovector principal del tensor de orientación.
+    const conEstria = usados.filter((r) => r.stria);
+    let striaMean = null;
+    if (conEstria.length >= 2) {
+      const vecs = conEstria.map((r) => r.stria.vec);
+      const { vectors } = jacobi3x3(orientationTensor(vecs));
+      const e1 = vectors[0];
+      const [trend, plunge] = vectorToTrendPlunge(e1);
+      const angs = vecs.map((v) => toDeg(Math.acos(clamp1(Math.abs(dot3(v, e1))))));
+      striaMean = {
+        trend, plunge, n: conEstria.length,
+        dispersion: angs.reduce((a, b) => a + b, 0) / angs.length,
+      };
+    }
+    const striasFueraDePlano = conEstria.filter((r) => r.stria.desviacion > 10).length;
+
     groups.push({
       key: g.key, localidad: g.localidad, tipo: g.tipo,
       items: g.items, usados, n: usados.length, nTotal: g.items.length,
       ddMean, dipMean, strikeMean, R, kappa, alpha95, centroid, cinematicas,
+      striaMean, nEstrias: conEstria.length, striasFueraDePlano,
     });
   }
   groups.sort((a, b) => a.localidad.localeCompare(b.localidad) || a.tipo.localeCompare(b.tipo));
@@ -1516,6 +1561,8 @@ const CAMPOS_CSV = [
   { key: "orientacion", label: "Orientación (rumbo o DD)", req: true },
   { key: "manteo",      label: "Manteo",                   req: true },
   { key: "tipo",        label: "Tipo",                     req: false },
+  { key: "striaTrend",  label: "Estría: trend",            req: false },
+  { key: "striaPlunge", label: "Estría: plunge",           req: false },
   { key: "cinematica",  label: "Cinemática / descripción", req: false },
   { key: "localidad",   label: "Localidad",                req: false },
   { key: "lat",         label: "Lat",                      req: false },
@@ -1532,6 +1579,8 @@ const SINONIMOS_CSV = {
   manteo: ["manteo", "dip", "buzamiento", "inclinacion", "inclinación"],
   tipo: ["tipo", "tipo_estructura", "estructura"],
   cinematica: ["cinematica", "cinemática", "kinematics", "movimiento", "sentido", "desplazamiento", "descripcion", "descripción", "obs", "observaciones", "nota", "notas"],
+  striaTrend: ["estria_trend", "estría_trend", "trend", "estria", "estría", "lineacion_trend", "lineación_trend", "trend_estria", "azimut_estria"],
+  striaPlunge: ["estria_plunge", "estría_plunge", "plunge", "buzamiento_estria", "plunge_estria", "lineacion_plunge", "lineación_plunge"],
   localidad: ["localidad", "sitio", "estacion", "estación", "ubicacion", "ubicación", "sector"],
   lat: ["lat", "latitud", "latitude", "y_wgs84"],
   lon: ["lon", "lng", "long", "longitud", "longitude", "x_wgs84"],
@@ -1576,6 +1625,8 @@ function rowsToMeasurements(rows, mapping) {
     orientacion: csvNum(pick(cols, mapping.orientacion)),
     manteo: csvNum(pick(cols, mapping.manteo)),
     tipo: pick(cols, mapping.tipo),
+    striaTrend: csvNum(pick(cols, mapping.striaTrend)),
+    striaPlunge: csvNum(pick(cols, mapping.striaPlunge)),
     cinematica: pick(cols, mapping.cinematica),
     localidad: pick(cols, mapping.localidad),
     lat: csvNum(pick(cols, mapping.lat)),
@@ -1588,13 +1639,13 @@ function rowsToMeasurements(rows, mapping) {
 // Plantilla: trae lat/lon y también este/norte (UTM) para mostrar las dos formas.
 // Se puede borrar el par que no se use; basta con uno.
 const PLANTILLA_CSV = [
-  "localidad,tipo,cinematica,rumbo,manteo,lat,lon,este,norte",
-  "Cerro Alto,Estratificación,,31,35,-33.45000,-70.65000,346500,6298000",
-  "Cerro Alto,Estratificación,,35,32,-33.45100,-70.65100,346410,6297890",
-  "Cerro Alto,Estratificación,,28,38,-33.44900,-70.64900,346590,6298110",
-  "Quebrada Sur,Falla,Dextral inversa,115,68,-33.52000,-70.72000,340000,6290300",
-  "Quebrada Sur,Falla,Dextral,120,70,-33.52100,-70.72100,339910,6290190",
-  "Quebrada Sur,Diaclasa,,10,80,-33.52200,-70.71900,340090,6290080",
+  "localidad,tipo,cinematica,rumbo,manteo,estria_trend,estria_plunge,lat,lon,este,norte",
+  "Cerro Alto,Estratificación,,31,35,,,-33.45000,-70.65000,346500,6298000",
+  "Cerro Alto,Estratificación,,35,32,,,-33.45100,-70.65100,346410,6297890",
+  "Cerro Alto,Estratificación,,28,38,,,-33.44900,-70.64900,346590,6298110",
+  "Quebrada Sur,Falla,Dextral inversa,110,70,141,54,-33.52000,-70.72000,340000,6290300",
+  "Quebrada Sur,Falla,Dextral,115,68,148,53,-33.52100,-70.72100,339910,6290190",
+  "Quebrada Sur,Diaclasa,,10,80,,,-33.52200,-70.71900,340090,6290080",
   "",
 ].join("\n");
 
@@ -1696,15 +1747,22 @@ function MapPanel({ groups, onMarkerClick }) {
 // ═══════════════════════════════════════════════════════════════
 function fmt(n, d = 0) { return n == null || isNaN(n) ? "—" : n.toFixed(d); }
 
-function StereonetPanel({ group, highlighted, setRef, onToggleUsar }) {
+function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, onSelect }) {
   const [verLista, setVerLista] = useState(false);
   // Se dibujan todas, pero las excluidas van atenuadas: hay que poder ver qué
   // se dejó fuera del promedio.
-  const planeLines = group.items.map((r) => ({ pts: svgPoints(greatCircleXY(r.dd, r.dip)), usar: r.usar }));
+  const dibujo = group.items.map((r) => ({
+    r,
+    linea: svgPoints(greatCircleXY(r.dd, r.dip)),
+    polo: equalAreaProject(mod360(r.dd + 180), 90 - r.dip),
+    estria: r.stria ? equalAreaProject(r.stria.trend, r.stria.plunge) : null,
+  }));
   const meanPlaneLine = group.ddMean != null ? svgPoints(greatCircleXY(group.ddMean, group.dipMean)) : null;
-  const polePts = group.items.map((r) => ({ p: equalAreaProject(mod360(r.dd + 180), 90 - r.dip), usar: r.usar }));
   const meanPole = group.ddMean != null ? equalAreaProject(mod360(group.ddMean + 180), 90 - group.dipMean) : null;
+  const meanStria = group.striaMean
+    ? equalAreaProject(group.striaMean.trend, group.striaMean.plunge) : null;
   const excluidas = group.nTotal - group.n;
+  const sel = (id) => id === selectedId;
 
   return (
     <div ref={setRef} style={{
@@ -1722,35 +1780,64 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar }) {
           {excluidas > 0 && <span style={{ color: T.text3 }}> de {group.nTotal}</span>}
         </div>
       </div>
-      <div style={{ display: "flex", gap: 10 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 10, color: T.text3, textAlign: "center", marginBottom: 2 }}>PLANOS</div>
+      <div style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
+        <div style={{ flex: "1 1 300px", maxWidth: 430, minWidth: 0 }}>
+          <div style={{ fontSize: 10, color: T.text3, textAlign: "center", marginBottom: 2 }}>
+            PLANOS{group.nEstrias > 0 ? " Y ESTRÍAS" : ""}
+          </div>
           <svg viewBox="-1.3 -1.3 2.6 2.6" style={{ width: "100%", display: "block" }}>
             <SchmidtNetGrid />
-            {planeLines.map((l, i) => (
-              <polyline key={i} points={l.pts} fill="none"
-                        stroke={l.usar ? T.accent : T.text3}
-                        strokeWidth="0.01"
-                        strokeDasharray={l.usar ? undefined : "0.03 0.03"}
-                        opacity={l.usar ? 0.55 : 0.4} />
+            {dibujo.map((d) => (
+              <polyline key={d.r.id} points={d.linea} fill="none"
+                        stroke={sel(d.r.id) ? T.selec : d.r.usar ? T.accent : T.text3}
+                        strokeWidth={sel(d.r.id) ? "0.026" : "0.01"}
+                        strokeDasharray={d.r.usar ? undefined : "0.03 0.03"}
+                        opacity={sel(d.r.id) ? 1 : d.r.usar ? 0.55 : 0.4} />
             ))}
             {meanPlaneLine && <polyline points={meanPlaneLine} fill="none" stroke={T.danger} strokeWidth="0.022" />}
+            {/* Estrías: la lineación se proyecta como un punto sobre su plano */}
+            {dibujo.filter((d) => d.estria).map((d) => (
+              <circle key={"e" + d.r.id} cx={d.estria[0]} cy={-d.estria[1]} r={sel(d.r.id) ? "0.035" : "0.022"}
+                      fill={T.estria} stroke="#fff" strokeWidth="0.006"
+                      opacity={d.r.usar ? 1 : 0.45} />
+            ))}
+            {meanStria && (
+              <circle cx={meanStria[0]} cy={-meanStria[1]} r="0.045"
+                      fill="none" stroke={T.estria} strokeWidth="0.018" />
+            )}
+            {/* Zonas de clic anchas y transparentes: una línea de 0.01 es
+                imposible de acertar con el dedo o el mouse. */}
+            {dibujo.map((d) => (
+              <polyline key={"h" + d.r.id} points={d.linea} fill="none" stroke="transparent"
+                        strokeWidth="0.06" style={{ cursor: "pointer" }}
+                        onClick={() => onSelect(sel(d.r.id) ? null : d.r.id)}>
+                <title>{`${fmt(ddToStrike(d.r.dd))}° / ${fmt(d.r.dip)}°`}</title>
+              </polyline>
+            ))}
           </svg>
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: "1 1 300px", maxWidth: 430, minWidth: 0 }}>
           <div style={{ fontSize: 10, color: T.text3, textAlign: "center", marginBottom: 2 }}>POLOS</div>
           <svg viewBox="-1.3 -1.3 2.6 2.6" style={{ width: "100%", display: "block" }}>
             <SchmidtNetGrid />
-            {polePts.map((d, i) => (
-              <circle key={i} cx={d.p[0]} cy={-d.p[1]} r="0.02"
-                      fill={d.usar ? T.accent : "none"}
-                      stroke={d.usar ? "none" : T.text3} strokeWidth="0.008"
-                      opacity={d.usar ? 0.6 : 0.7} />
+            {dibujo.map((d) => (
+              <circle key={d.r.id} cx={d.polo[0]} cy={-d.polo[1]} r={sel(d.r.id) ? "0.038" : "0.02"}
+                      fill={sel(d.r.id) ? T.selec : d.r.usar ? T.accent : "none"}
+                      stroke={sel(d.r.id) ? "#fff" : d.r.usar ? "none" : T.text3}
+                      strokeWidth="0.008"
+                      opacity={sel(d.r.id) ? 1 : d.r.usar ? 0.6 : 0.7} />
             ))}
             {meanPole && <circle cx={meanPole[0]} cy={-meanPole[1]} r="0.04" fill={T.danger} stroke="#fff" strokeWidth="0.008" />}
+            {dibujo.map((d) => (
+              <circle key={"h" + d.r.id} cx={d.polo[0]} cy={-d.polo[1]} r="0.055" fill="transparent"
+                      style={{ cursor: "pointer" }}
+                      onClick={() => onSelect(sel(d.r.id) ? null : d.r.id)}>
+                <title>{`${fmt(ddToStrike(d.r.dd))}° / ${fmt(d.r.dip)}°`}</title>
+              </circle>
+            ))}
           </svg>
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: "1 1 300px", maxWidth: 430, minWidth: 0 }}>
           <div style={{ fontSize: 10, color: T.text3, textAlign: "center", marginBottom: 2 }}>ROSA</div>
           <RoseDiagram group={group} />
         </div>
@@ -1771,6 +1858,23 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar }) {
       {group.cinematicas.length > 0 && (
         <div style={{ marginTop: 6, fontSize: 11, color: T.text2 }}>
           <span style={{ color: T.text3 }}>Cinemática: </span>{group.cinematicas.join(" · ")}
+        </div>
+      )}
+
+      {group.nEstrias > 0 && (
+        <div style={{ marginTop: 6, fontSize: 11.5, fontFamily: MONO, color: T.text2 }}>
+          <span style={{ color: T.estria }}>●</span> Estrías ({group.nEstrias}):{" "}
+          {group.striaMean
+            ? <>promedio Trend {fmt(group.striaMean.trend)}° · Plunge {fmt(group.striaMean.plunge)}°
+                <span style={{ color: T.text3 }}> · dispersión {fmt(group.striaMean.dispersion, 1)}°</span></>
+            : <span style={{ color: T.text3 }}>se necesitan 2 para promediar</span>}
+          {group.striasFueraDePlano > 0 && (
+            <div style={{ color: "#8A5A00", fontFamily: SANS, fontSize: 11, marginTop: 3 }}>
+              ⚠ {group.striasFueraDePlano} estría{group.striasFueraDePlano > 1 ? "s" : ""} se
+              aparta{group.striasFueraDePlano > 1 ? "n" : ""} más de 10° del plano de su falla:
+              revisar trend/plunge o el manteo.
+            </div>
+          )}
         </div>
       )}
 
@@ -2088,15 +2192,16 @@ function rowInvalid(m) {
 }
 
 function MeasurementsTable({ measurements, setMeasurements, convencion, setConvencion,
-                            showUtm, setShowUtm, zonaUtm, setZonaUtm }) {
+                            showUtm, setShowUtm, zonaUtm, setZonaUtm,
+                            selectedId, onSelect, rowRefs }) {
   const update = (id, field, value) =>
     setMeasurements((prev) => prev.map((m) => (m.id === id ? { ...m, [field]: value } : m)));
   const addRow = () =>
     setMeasurements((prev) => [
       ...prev,
       { id: (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()),
-        orientacion: "", manteo: "", tipo: "", cinematica: "", localidad: "",
-        lat: "", lon: "", este: "", norte: "", usar: true },
+        orientacion: "", manteo: "", tipo: "", striaTrend: "", striaPlunge: "",
+        cinematica: "", localidad: "", lat: "", lon: "", este: "", norte: "", usar: true },
     ]);
   const delRow = (id) => setMeasurements((prev) => prev.filter((m) => m.id !== id));
   const fileInput = useRef(null);
@@ -2174,13 +2279,15 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
         />
       )}
       <div style={{ overflowX: "auto" }}>
-        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: showUtm ? 1080 : 860 }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", minWidth: showUtm ? 1280 : 1060 }}>
           <thead>
             <tr style={{ fontSize: 10.5, color: T.text3, textAlign: "left" }}>
               <th style={{ padding: "4px 4px" }} title="Incluir en el promedio y en la estadística">✓</th>
               <th style={{ padding: "4px 6px" }}>{convencion === "strike" ? "Rumbo°" : "DD°"}</th>
               <th style={{ padding: "4px 6px" }}>Manteo°</th>
               <th style={{ padding: "4px 6px" }}>Tipo</th>
+              <th style={{ padding: "4px 6px" }} title="Estría / lineación sobre el plano">Estría trend°</th>
+              <th style={{ padding: "4px 6px" }}>Estría plunge°</th>
               <th style={{ padding: "4px 6px" }}>Cinemática</th>
               <th style={{ padding: "4px 6px" }}>Localidad</th>
               <th style={{ padding: "4px 6px" }}>Lat</th>
@@ -2194,7 +2301,15 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
             {measurements.map((m) => {
               const invalid = rowInvalid(m);
               return (
-                <tr key={m.id} style={{ background: invalid ? "#FBEAEA" : "transparent", opacity: m.usar === false ? 0.5 : 1 }}
+                <tr key={m.id}
+                    ref={(el) => { if (rowRefs) rowRefs.current[m.id] = el; }}
+                    onClick={() => onSelect(m.id === selectedId ? null : m.id)}
+                    style={{
+                      background: m.id === selectedId ? "#EDE4FE" : invalid ? "#FBEAEA" : "transparent",
+                      boxShadow: m.id === selectedId ? `inset 3px 0 0 ${T.selec}` : "none",
+                      opacity: m.usar === false ? 0.5 : 1,
+                      scrollMarginTop: 80, cursor: "pointer",
+                    }}
                     title={invalid ? "Orientación o manteo no válidos (manteo 0 se trata como sin dato, igual que el script ArcGIS) — esta fila no entra en ningún estereograma" : ""}>
                   <td style={{ padding: 3, textAlign: "center" }}>
                     <input type="checkbox" checked={m.usar !== false}
@@ -2204,6 +2319,8 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.orientacion} onChange={(e) => update(m.id, "orientacion", e.target.value)} /></td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.manteo} onChange={(e) => update(m.id, "manteo", e.target.value)} /></td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.tipo} onChange={(e) => update(m.id, "tipo", e.target.value)} /></td>
+                  <td style={{ padding: 3 }}><input style={inputStyle} value={m.striaTrend || ""} onChange={(e) => update(m.id, "striaTrend", e.target.value)} /></td>
+                  <td style={{ padding: 3 }}><input style={inputStyle} value={m.striaPlunge || ""} onChange={(e) => update(m.id, "striaPlunge", e.target.value)} /></td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.cinematica || ""} onChange={(e) => update(m.id, "cinematica", e.target.value)} /></td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.localidad} onChange={(e) => update(m.id, "localidad", e.target.value)} /></td>
                   <td style={{ padding: 3 }}><input style={inputStyle} value={m.lat} onChange={(e) => update(m.id, "lat", e.target.value)} /></td>
@@ -2230,9 +2347,10 @@ const SAMPLE_DATA = [
   { id: "s1", orientacion: 120, manteo: 35, tipo: "Estratificación", cinematica: "", localidad: "Cerro Alto", lat: -33.450, lon: -70.650, este: "", norte: "", usar: true },
   { id: "s2", orientacion: 125, manteo: 32, tipo: "Estratificación", cinematica: "", localidad: "Cerro Alto", lat: -33.451, lon: -70.651, este: "", norte: "", usar: true },
   { id: "s3", orientacion: 118, manteo: 38, tipo: "Estratificación", cinematica: "", localidad: "Cerro Alto", lat: -33.449, lon: -70.649, este: "", norte: "", usar: true },
-  { id: "s4", orientacion: 200, manteo: 70, tipo: "Falla", cinematica: "Dextral inversa", localidad: "Quebrada Sur", lat: -33.520, lon: -70.720, este: "", norte: "", usar: true },
-  { id: "s5", orientacion: 205, manteo: 68, tipo: "Falla", cinematica: "Dextral", localidad: "Quebrada Sur", lat: -33.521, lon: -70.721, este: "", norte: "", usar: true },
-  { id: "s6", orientacion: 210, manteo: 65, tipo: "Falla", cinematica: "Dextral", localidad: "Quebrada Sur", lat: -33.522, lon: -70.719, este: "", norte: "", usar: true },
+  // Las estrías de ejemplo tienen cabeceo ~60°, así que yacen en su plano de falla
+  { id: "s4", orientacion: 200, manteo: 70, tipo: "Falla", striaTrend: 141, striaPlunge: 54, cinematica: "Dextral inversa", localidad: "Quebrada Sur", lat: -33.520, lon: -70.720, este: "", norte: "", usar: true },
+  { id: "s5", orientacion: 205, manteo: 68, tipo: "Falla", striaTrend: 148, striaPlunge: 53, cinematica: "Dextral", localidad: "Quebrada Sur", lat: -33.521, lon: -70.721, este: "", norte: "", usar: true },
+  { id: "s6", orientacion: 210, manteo: 65, tipo: "Falla", striaTrend: 156, striaPlunge: 52, cinematica: "Dextral", localidad: "Quebrada Sur", lat: -33.522, lon: -70.719, este: "", norte: "", usar: true },
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -2252,6 +2370,16 @@ function App() {
 
   const toggleUsar = (id, valor) =>
     setMeasurements((prev) => prev.map((m) => (m.id === id ? { ...m, usar: valor } : m)));
+
+  // Seleccionar un plano/polo en el estereograma lleva a su fila en la tabla
+  const [selectedId, setSelectedId] = useState(null);
+  const rowRefs = useRef({});
+  const seleccionar = (id) => {
+    setSelectedId(id);
+    if (id && rowRefs.current[id]) {
+      rowRefs.current[id].scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  };
 
   const handleMarkerClick = (key) => {
     setHighlightKey(key);
@@ -2276,6 +2404,9 @@ function App() {
           setShowUtm={setShowUtm}
           zonaUtm={zonaUtm}
           setZonaUtm={setZonaUtm}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          rowRefs={rowRefs}
         />
 
         {groups.length === 0 ? (
@@ -2283,7 +2414,7 @@ function App() {
             Agrega mediciones válidas (orientación + manteo) para ver los estereogramas.
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(460px, 1fr))", gap: 14 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {groups.map((g) => (
               <StereonetPanel
                 key={g.key}
@@ -2291,6 +2422,8 @@ function App() {
                 highlighted={highlightKey === g.key}
                 setRef={(el) => { panelRefs.current[g.key] = el; }}
                 onToggleUsar={toggleUsar}
+                selectedId={selectedId}
+                onSelect={seleccionar}
               />
             ))}
           </div>
