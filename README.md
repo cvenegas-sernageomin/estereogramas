@@ -45,6 +45,20 @@ recursos PWA (instalable en Android/iOS si se sirve por HTTPS).
   `lat`, `lon` (nombres reconocidos sin distinguir mayúsculas). Excel: exportar a CSV primero
   (no hay soporte .xlsx en v1).
 
+## Iconos
+
+`tools/gen_icons.py` (requiere Pillow) genera los iconos de la PWA: una red de Schmidt con dos
+grandes círculos —los limbos de un pliegue— y, en su intersección exacta, el eje de pliegue.
+La geometría sale de la misma proyección equiareal que usa la app, no está dibujada a ojo.
+
+```powershell
+python tools\gen_icons.py src\pwa
+```
+
+El disco ocupa el 76% del lienzo para caber en la zona segura del recorte *maskable* de Android.
+Se evita la malla regular de meridianos/paralelos a propósito: a tamaño de icono se lee como un
+globo terráqueo en vez de un estereograma.
+
 ## Pendientes conocidos (no bloquean v1)
 
 - Conversión UTM→lat/lon (hoy Este/Norte es solo informativo).

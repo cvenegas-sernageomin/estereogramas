@@ -1069,10 +1069,15 @@ const mod360 = (x) => ((x % 360) + 360) % 360;
 const clamp1 = (x) => (x > 1 ? 1 : x < -1 ? -1 : x);
 
 // ─── conversiones orientación ───────────────────────────────
+// Polo real del plano: trend = dd+180, plunge = 90-manteo (x=este, y=norte, z=abajo),
+// o sea la componente horizontal apunta EN CONTRA del manteo. El script ArcGIS
+// original la apuntaba hacia el manteo; como eso equivale a una rotación de 180°
+// en torno a la vertical, no afectaba a promedios ni a Fisher (una rotación no
+// cambia ángulos), pero sí invertía el producto cruz del eje de pliegue.
 function ddDipToNormal(dd, dip) {
   const ddR = toRad(dd), dR = toRad(dip);
-  const nx = Math.sin(dR) * Math.sin(ddR);
-  const ny = Math.sin(dR) * Math.cos(ddR);
+  const nx = -Math.sin(dR) * Math.sin(ddR);
+  const ny = -Math.sin(dR) * Math.cos(ddR);
   const nz = Math.cos(dR);
   return [nx, ny, nz];
 }
@@ -1084,7 +1089,7 @@ function normalToDdDip(n) {
   if (norm < 1e-12) return [0, 0];
   nx /= norm; ny /= norm; nz /= norm;
   const dip = 90 - toDeg(Math.asin(clamp1(nz)));
-  const dd = mod360(toDeg(Math.atan2(nx, ny)));
+  const dd = mod360(toDeg(Math.atan2(nx, ny)) + 180);
   return [dd, dip];
 }
 
