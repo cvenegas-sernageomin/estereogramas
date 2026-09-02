@@ -1357,46 +1357,99 @@ function splitCsvLine(line, delim) {
   return out.map((s) => s.trim());
 }
 
-function parseCSV(text) {
+// Campos de la app a los que se puede mapear una columna del CSV
+const CAMPOS_CSV = [
+  { key: "orientacion", label: "Orientación (rumbo o DD)", req: true },
+  { key: "manteo",      label: "Manteo",                   req: true },
+  { key: "tipo",        label: "Tipo",                     req: false },
+  { key: "localidad",   label: "Localidad",                req: false },
+  { key: "lat",         label: "Lat",                      req: false },
+  { key: "lon",         label: "Lon",                      req: false },
+  { key: "este",        label: "Este (UTM)",               req: false },
+  { key: "norte",       label: "Norte (UTM)",              req: false },
+];
+
+// Nombres que se reconocen solos. Es sólo la propuesta inicial: el mapeo
+// definitivo lo elige el usuario, así que un CSV con encabezados cualesquiera
+// (o sin encabezado reconocible) igual se puede importar.
+const SINONIMOS_CSV = {
+  orientacion: ["orientacion", "orientación", "rumbo", "dd", "dip_direction", "dipdirection", "direccion", "dirección", "strike", "azimut", "azimuth"],
+  manteo: ["manteo", "dip", "buzamiento", "inclinacion", "inclinación"],
+  tipo: ["tipo", "tipo_estructura", "estructura"],
+  localidad: ["localidad", "sitio", "estacion", "estación", "ubicacion", "ubicación", "sector"],
+  lat: ["lat", "latitud", "latitude", "y_wgs84"],
+  lon: ["lon", "lng", "long", "longitud", "longitude", "x_wgs84"],
+  este: ["este", "easting", "utm_e", "utm_este", "x"],
+  norte: ["norte", "northing", "utm_n", "utm_norte", "y"],
+};
+
+// Excel en español exporta con ";" y coma decimal: parseFloat("-33,45") daría -33
+// y movería el punto cientos de km sin avisar. Se normaliza a punto al importar.
+const csvNum = (s) => {
+  const t = String(s == null ? "" : s).trim();
+  return /^-?\d+,\d+$/.test(t) ? t.replace(",", ".") : t;
+};
+
+/** Parte el CSV en encabezado + filas crudas, sin decidir todavía qué es cada columna. */
+function parseCsvTable(text) {
   const lines = text.replace(/\r/g, "").split("\n").filter((l) => l.trim().length);
-  if (!lines.length) return [];
+  if (!lines.length) return null;
   const delim = (lines[0].match(/;/g) || []).length > (lines[0].match(/,/g) || []).length ? ";" : ",";
-  const header = splitCsvLine(lines[0], delim).map((h) => h.toLowerCase());
-  const findCol = (names) => header.findIndex((h) => names.includes(h));
-  const idx = {
-    orientacion: findCol(["orientacion", "rumbo", "dd", "dip_direction", "dipdirection", "direccion"]),
-    manteo: findCol(["manteo", "dip", "buzamiento"]),
-    tipo: findCol(["tipo", "tipo_estructura", "estructura"]),
-    localidad: findCol(["localidad", "sitio", "estacion", "ubicacion"]),
-    lat: findCol(["lat", "latitud"]),
-    lon: findCol(["lon", "lng", "longitud"]),
-    este: findCol(["este", "easting", "utm_e", "x"]),
-    norte: findCol(["norte", "northing", "utm_n", "y"]),
-  };
-  const pick = (cols, i) => (i >= 0 ? cols[i] ?? "" : "");
-  // Excel en español exporta con ";" y coma decimal: parseFloat("-33,45") daría -33
-  // y movería el punto cientos de km sin avisar. Se normaliza a punto al importar.
-  const num = (s) => {
-    const t = String(s).trim();
-    return /^-?\d+,\d+$/.test(t) ? t.replace(",", ".") : t;
-  };
+  const header = splitCsvLine(lines[0], delim);
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
     const cols = splitCsvLine(lines[i], delim);
     if (!cols.some((c) => c !== "")) continue;
-    rows.push({
-      id: (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()),
-      orientacion: num(pick(cols, idx.orientacion)),
-      manteo: num(pick(cols, idx.manteo)),
-      tipo: pick(cols, idx.tipo),
-      localidad: pick(cols, idx.localidad),
-      lat: num(pick(cols, idx.lat)),
-      lon: num(pick(cols, idx.lon)),
-      este: num(pick(cols, idx.este)),
-      norte: num(pick(cols, idx.norte)),
-    });
+    rows.push(cols);
   }
-  return rows;
+  return { header, rows, delim };
+}
+
+/** Propuesta de mapeo por nombre de columna; -1 = sin asignar. */
+function guessMapping(header) {
+  const low = header.map((h) => h.trim().toLowerCase());
+  const m = {};
+  for (const { key } of CAMPOS_CSV) m[key] = low.findIndex((h) => SINONIMOS_CSV[key].includes(h));
+  return m;
+}
+
+function rowsToMeasurements(rows, mapping) {
+  const pick = (cols, i) => (i >= 0 && cols[i] != null ? String(cols[i]).trim() : "");
+  return rows.map((cols) => ({
+    id: (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()),
+    orientacion: csvNum(pick(cols, mapping.orientacion)),
+    manteo: csvNum(pick(cols, mapping.manteo)),
+    tipo: pick(cols, mapping.tipo),
+    localidad: pick(cols, mapping.localidad),
+    lat: csvNum(pick(cols, mapping.lat)),
+    lon: csvNum(pick(cols, mapping.lon)),
+    este: csvNum(pick(cols, mapping.este)),
+    norte: csvNum(pick(cols, mapping.norte)),
+  }));
+}
+
+const PLANTILLA_CSV = [
+  "localidad,tipo,rumbo,manteo,lat,lon",
+  "Cerro Alto,Estratificación,31,35,-33.45000,-70.65000",
+  "Cerro Alto,Estratificación,35,32,-33.45100,-70.65100",
+  "Cerro Alto,Estratificación,28,38,-33.44900,-70.64900",
+  "Quebrada Sur,Falla,115,68,-33.52000,-70.72000",
+  "Quebrada Sur,Falla,120,70,-33.52100,-70.72100",
+  "Quebrada Sur,Diaclasa,10,80,-33.52200,-70.71900",
+  "",
+].join("\n");
+
+function descargarPlantilla() {
+  // BOM explícito (U+FEFF): sin él Excel abre los acentos como mojibake
+  const blob = new Blob(["\uFEFF" + PLANTILLA_CSV], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "plantilla_estereogramas.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1632,6 +1685,105 @@ const btnStyle = {
 };
 const btnPrimary = { ...btnStyle, background: T.accent, borderColor: T.accent, color: "#fff" };
 
+// Panel de mapeo: aparece al elegir un CSV y deja asignar a mano qué columna
+// va a qué campo, con vista previa de las primeras filas antes de importar.
+function CsvMapper({ pending, setPending, onImport, onCancel, convencion }) {
+  const { header, rows, mapping, fileName } = pending;
+  const setCol = (key, idx) =>
+    setPending({ ...pending, mapping: { ...mapping, [key]: idx } });
+  const faltan = CAMPOS_CSV.filter((c) => c.req && mapping[c.key] < 0);
+  const preview = rowsToMeasurements(rows.slice(0, 3), mapping);
+
+  // Si el nombre de la columna de orientación contradice el toggle global, avisar:
+  // importar rumbos leyéndolos como dip direction es un error de 90° que no se nota.
+  const colOrient = mapping.orientacion >= 0 ? (header[mapping.orientacion] || "").trim().toLowerCase() : "";
+  const pareceRumbo = ["rumbo", "strike", "azimut", "azimuth"].includes(colOrient);
+  const pareceDD = ["dd", "dip_direction", "dipdirection", "direccion", "dirección", "az_buz"].includes(colOrient);
+  const choque = (pareceRumbo && convencion === "dd") || (pareceDD && convencion === "strike");
+
+  return (
+    <div style={{ border: `1px solid ${T.accent}`, background: T.panelAlt, borderRadius: 8, padding: 12, marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontWeight: 700, color: T.text2 }}>
+          Asignar columnas <span style={{ fontWeight: 400, color: T.text3, fontSize: 12 }}>
+            · {fileName} · {rows.length} fila{rows.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <div style={{ fontSize: 11.5, color: T.text3 }}>
+          Elige qué columna del archivo va a cada campo. «—» deja el campo vacío.
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 8, marginBottom: 10 }}>
+        {CAMPOS_CSV.map((c) => (
+          <label key={c.key} style={{ fontSize: 12, color: T.text2, display: "flex", flexDirection: "column", gap: 3 }}>
+            <span>
+              {c.label}
+              {c.req && <span style={{ color: T.danger }}> *</span>}
+            </span>
+            <select
+              style={{ ...selectStyle, borderColor: c.req && mapping[c.key] < 0 ? T.danger : T.inputBd }}
+              value={mapping[c.key]}
+              onChange={(e) => setCol(c.key, parseInt(e.target.value, 10))}>
+              <option value={-1}>—</option>
+              {header.map((h, i) => (
+                <option key={i} value={i}>{h.trim() || `(columna ${i + 1})`}</option>
+              ))}
+            </select>
+          </label>
+        ))}
+      </div>
+
+      {choque && (
+        <div style={{ fontSize: 12, color: "#8A5A00", background: "#FFF4DB", border: "1px solid #E8C77A",
+                      borderRadius: 6, padding: "6px 9px", marginBottom: 8 }}>
+          La columna «{header[mapping.orientacion].trim()}» parece {pareceRumbo ? "rumbo" : "dip direction"},
+          pero arriba está seleccionado «{convencion === "dd" ? "Dip Direction" : "Rumbo (RHR)"}».
+          Si no calzan, los planos quedan girados 90°.
+        </div>
+      )}
+
+      <div style={{ fontSize: 11, color: T.text3, marginBottom: 4 }}>Vista previa:</div>
+      <div style={{ overflowX: "auto", marginBottom: 10 }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 11.5, fontFamily: MONO, color: T.text2 }}>
+          <thead>
+            <tr style={{ color: T.text3 }}>
+              {CAMPOS_CSV.map((c) => (
+                <th key={c.key} style={{ padding: "2px 10px 2px 0", textAlign: "left", fontWeight: 400 }}>{c.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {preview.map((p, i) => (
+              <tr key={i}>
+                {CAMPOS_CSV.map((c) => (
+                  <td key={c.key} style={{ padding: "2px 10px 2px 0", whiteSpace: "nowrap" }}>
+                    {p[c.key] === "" ? <span style={{ color: T.text3 }}>—</span> : p[c.key]}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button style={faltan.length ? { ...btnStyle, opacity: 0.5, cursor: "not-allowed" } : btnPrimary}
+                disabled={faltan.length > 0}
+                onClick={() => onImport(rowsToMeasurements(rows, mapping))}>
+          Importar {rows.length} fila{rows.length !== 1 ? "s" : ""}
+        </button>
+        <button style={btnStyle} onClick={onCancel}>Cancelar</button>
+        {faltan.length > 0 && (
+          <span style={{ fontSize: 12, color: T.danger }}>
+            Falta asignar: {faltan.map((c) => c.label).join(", ")}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function rowInvalid(m) {
   const touched = m.orientacion !== "" || m.manteo !== "";
   if (!touched) return false;
@@ -1650,14 +1802,25 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
     ]);
   const delRow = (id) => setMeasurements((prev) => prev.filter((m) => m.id !== id));
   const fileInput = useRef(null);
+  const [pending, setPending] = useState(null);   // CSV leído, esperando el mapeo
 
   const onCsv = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const rows = parseCSV(String(ev.target.result));
-      if (rows.length) setMeasurements((prev) => [...prev, ...rows]);
+      const tabla = parseCsvTable(String(ev.target.result));
+      if (!tabla || !tabla.rows.length) {
+        setPending(null);
+        alert("No se encontraron filas de datos en el archivo.");
+        return;
+      }
+      setPending({
+        header: tabla.header,
+        rows: tabla.rows,
+        mapping: guessMapping(tabla.header),
+        fileName: file.name,
+      });
     };
     reader.readAsText(file, "UTF-8");
     e.target.value = "";
@@ -1685,14 +1848,26 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
           mostrar UTM
         </label>
         <div style={{ flex: 1 }} />
+        <button style={btnStyle} onClick={descargarPlantilla}>Plantilla CSV</button>
         <button style={btnStyle} onClick={() => fileInput.current.click()}>Importar CSV</button>
         <input ref={fileInput} type="file" accept=".csv,text/csv" onChange={onCsv} style={{ display: "none" }} />
         <button style={btnPrimary} onClick={addRow}>+ Agregar fila</button>
         <div style={{ fontSize: 11.5, color: T.text3, fontFamily: MONO }}>{measurements.length} filas</div>
       </div>
       <div style={{ fontSize: 11, color: T.text3, marginBottom: 6 }}>
-        CSV esperado: columnas orientacion/rumbo/dd, manteo/dip, tipo, localidad, lat, lon (Excel: exportar a CSV primero).
+        Al importar eliges qué columna va a cada campo, así que sirve cualquier encabezado.
+        Separador «,» o «;» y coma decimal se detectan solos (Excel: exportar a CSV primero).
       </div>
+
+      {pending && (
+        <CsvMapper
+          pending={pending}
+          setPending={setPending}
+          convencion={convencion}
+          onCancel={() => setPending(null)}
+          onImport={(filas) => { setMeasurements((prev) => [...prev, ...filas]); setPending(null); }}
+        />
+      )}
       <div style={{ overflowX: "auto" }}>
         <table style={{ borderCollapse: "collapse", width: "100%", minWidth: showUtm ? 900 : 700 }}>
           <thead>

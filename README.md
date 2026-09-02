@@ -41,9 +41,21 @@ recursos PWA (instalable en Android/iOS si se sirve por HTTPS).
 
 - Tabla editable en pantalla (rumbo o dip-direction según el toggle, manteo, tipo, localidad,
   lat/lon opcional).
-- Importar CSV con columnas: `orientacion`/`rumbo`/`dd`, `manteo`/`dip`, `tipo`, `localidad`,
-  `lat`, `lon` (nombres reconocidos sin distinguir mayúsculas). Excel: exportar a CSV primero
-  (no hay soporte .xlsx en v1).
+- Importar CSV **con cualquier encabezado**: al elegir el archivo aparece un panel donde se asigna
+  a mano qué columna va a cada campo, con vista previa de las primeras filas. La app propone un
+  mapeo inicial reconociendo nombres habituales (`orientacion`/`rumbo`/`dd`, `manteo`/`dip`,
+  `tipo`, `localidad`, `lat`, `lon`, `este`, `norte`), pero es sólo una propuesta: se puede
+  cambiar cualquiera, y las columnas que sobran se ignoran. Sólo Orientación y Manteo son
+  obligatorias.
+  - Separador `,` o `;` y coma decimal (`-33,45`) se detectan solos.
+  - Si el nombre de la columna de orientación contradice el toggle global (por ejemplo una
+    columna `rumbo` con el toggle en «Dip Direction»), avisa antes de importar: leer rumbos como
+    dip direction gira los planos 90° sin que se note.
+  - Excel: exportar a CSV primero (no hay soporte .xlsx).
+
+`plantilla_estereogramas.csv` en la raíz del repo es una plantilla de ejemplo; el botón
+**Plantilla CSV** de la app descarga esa misma plantilla (con BOM, para que Excel abra bien los
+acentos).
 
 ## Iconos
 
