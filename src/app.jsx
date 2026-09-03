@@ -1050,6 +1050,14 @@ const btnStyle = {
   border: `1px solid ${T.borderDk}`, background: T.panel, color: T.text2, cursor: "pointer",
 };
 const btnPrimary = { ...btnStyle, background: T.accent, borderColor: T.accent, color: "#fff" };
+// Encabezado que queda fijo mientras se hace scroll dentro de la tabla.
+// Va en cada <th> y no en <thead>: con border-collapse, sticky sobre
+// thead no funciona en todos los navegadores. El borde se pinta con
+// box-shadow porque border-collapse se come el del elemento sticky.
+const thSticky = {
+  position: "sticky", top: 0, zIndex: 1, background: T.panel,
+  boxShadow: `inset 0 -1px 0 ${T.border}`,
+};
 
 // Panel de mapeo: aparece al elegir un CSV y deja asignar a mano qué columna
 // va a qué campo, con vista previa de las primeras filas antes de importar.
@@ -1244,23 +1252,26 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
           onImport={(filas) => { setMeasurements((prev) => [...prev, ...filas]); setPending(null); }}
         />
       )}
-      <div style={{ overflowX: "auto" }}>
+      {/* Alto acotado al viewport: con muchas filas la tabla empujaba los
+          estereogramas fuera de la pantalla. En vh para que se adapte al alto
+          real del dispositivo; si hay pocas filas no aparece scroll. */}
+      <div style={{ overflow: "auto", maxHeight: "42vh", overscrollBehavior: "contain" }}>
         <table style={{ borderCollapse: "collapse", width: "100%", minWidth: showUtm ? 1280 : 1060 }}>
           <thead>
             <tr style={{ fontSize: 10.5, color: T.text3, textAlign: "left" }}>
-              <th style={{ padding: "4px 4px" }} title="Incluir en el promedio y en la estadística">✓</th>
-              <th style={{ padding: "4px 6px" }}>{convencion === "strike" ? "Rumbo°" : "DD°"}</th>
-              <th style={{ padding: "4px 6px" }}>Manteo°</th>
-              <th style={{ padding: "4px 6px" }}>Tipo</th>
-              <th style={{ padding: "4px 6px" }} title="Estría / lineación sobre el plano">Estría trend°</th>
-              <th style={{ padding: "4px 6px" }}>Estría plunge°</th>
-              <th style={{ padding: "4px 6px" }}>Cinemática</th>
-              <th style={{ padding: "4px 6px" }}>Localidad</th>
-              <th style={{ padding: "4px 6px" }}>Lat</th>
-              <th style={{ padding: "4px 6px" }}>Lon</th>
-              {showUtm && <th style={{ padding: "4px 6px" }}>Este</th>}
-              {showUtm && <th style={{ padding: "4px 6px" }}>Norte</th>}
-              <th style={{ padding: "4px 6px" }}></th>
+              <th style={{ ...thSticky, padding: "4px 4px" }} title="Incluir en el promedio y en la estadística">✓</th>
+              <th style={{ ...thSticky, padding: "4px 6px" }}>{convencion === "strike" ? "Rumbo°" : "DD°"}</th>
+              <th style={{ ...thSticky, padding: "4px 6px" }}>Manteo°</th>
+              <th style={{ ...thSticky, padding: "4px 6px" }}>Tipo</th>
+              <th style={{ ...thSticky, padding: "4px 6px" }} title="Estría / lineación sobre el plano">Estría trend°</th>
+              <th style={{ ...thSticky, padding: "4px 6px" }}>Estría plunge°</th>
+              <th style={{ ...thSticky, padding: "4px 6px" }}>Cinemática</th>
+              <th style={{ ...thSticky, padding: "4px 6px" }}>Localidad</th>
+              <th style={{ ...thSticky, padding: "4px 6px" }}>Lat</th>
+              <th style={{ ...thSticky, padding: "4px 6px" }}>Lon</th>
+              {showUtm && <th style={{ ...thSticky, padding: "4px 6px" }}>Este</th>}
+              {showUtm && <th style={{ ...thSticky, padding: "4px 6px" }}>Norte</th>}
+              <th style={{ ...thSticky, padding: "4px 6px" }}></th>
             </tr>
           </thead>
           <tbody>
@@ -1343,14 +1354,20 @@ function App() {
   const seleccionar = (id) => {
     setSelectedId(id);
     if (id && rowRefs.current[id]) {
-      rowRefs.current[id].scrollIntoView({ behavior: "smooth", block: "center" });
+      // Sin "smooth": la tabla tiene scroll propio y el desplazamiento animado
+      // no siempre se ejecuta dentro de un contenedor (se comprobó que quedaba
+      // en 0). Aquí importa que la fila quede a la vista, no la animación.
+      rowRefs.current[id].scrollIntoView({ block: "center" });
     }
   };
 
   const handleMarkerClick = (key) => {
     setHighlightKey(key);
     const el = panelRefs.current[key];
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Sin "smooth" por lo mismo que el salto a la fila: lo importante es que
+    // el panel quede a la vista, y el scroll animado no se ejecuta en todos
+    // los contextos (p. ej. con "reducir movimiento" activado).
+    if (el) el.scrollIntoView({ block: "center" });
     setTimeout(() => setHighlightKey((k) => (k === key ? null : k)), 1600);
   };
 

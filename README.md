@@ -36,6 +36,14 @@ el CSV). Se dibujan como puntos naranjos sobre el plano al que pertenecen, en la
   desviación y avisa si alguna se aparta más de 10° — normalmente significa un trend/plunge o un
   manteo mal anotado.
 
+## Espacio en pantalla
+
+La tabla tiene alto acotado (42vh) con scroll propio y encabezado fijo. Sin eso, con muchas
+mediciones empujaba los estereogramas fuera de la pantalla: con 66 filas la tabla medía 2479 px y
+el primer estereograma quedaba a 3511 px del inicio; ahora mide 378 px en una pantalla de 900 y el
+estereograma queda a 561 px. Al estar en `vh` se adapta al alto real del dispositivo (319 px en una
+pantalla de 760).
+
 ## Selección
 
 Al hacer clic en un plano o un polo del estereograma se resalta esa medición y la app salta a su
