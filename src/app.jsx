@@ -615,17 +615,97 @@ const PLANTILLA_CSV = [
   "",
 ].join("\n");
 
-function descargarPlantilla() {
-  // BOM explícito (U+FEFF): sin él Excel abre los acentos como mojibake
-  const blob = new Blob(["\uFEFF" + PLANTILLA_CSV], { type: "text/csv;charset=utf-8" });
+function descargarArchivo(nombre, contenido, mime) {
+  const blob = new Blob([contenido], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "plantilla_estereogramas.csv";
+  a.download = nombre;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// BOM explícito (U+FEFF): sin él Excel abre los acentos como mojibake
+const descargarCSV = (nombre, texto) =>
+  descargarArchivo(nombre, "\uFEFF" + texto, "text/csv;charset=utf-8");
+
+function descargarPlantilla() {
+  descargarCSV("plantilla_estereogramas.csv", PLANTILLA_CSV);
+}
+
+const hoy = () => new Date().toISOString().slice(0, 10);
+
+// Un campo se cita sólo si lo necesita; así el CSV queda legible al abrirlo.
+function csvCampo(v) {
+  const t = v == null ? "" : String(v);
+  return /[",;\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+}
+
+/** CSV de RESULTADOS por grupo: equivale al feature class que producía el
+ *  script ArcGIS original (LOCALIDAD, TIPO, N_PUNTOS, RUMBO_PROM, ...). */
+function exportarResultadosCSV(groups) {
+  const cols = ["localidad", "tipo", "n_usadas", "n_total", "rumbo_prom", "manteo_prom",
+                "dd_prom", "kappa", "alpha95", "n_estrias", "estria_trend_prom",
+                "estria_plunge_prom", "estria_dispersion", "lat", "lon", "cinematica"];
+  const r1 = (x, d = 0) => (x == null || isNaN(x) ? "" : x.toFixed(d));
+  const filas = groups.map((g) => [
+    g.localidad, g.tipo, g.n, g.nTotal,
+    r1(g.strikeMean), r1(g.dipMean), r1(g.ddMean),
+    r1(g.kappa), r1(g.alpha95, 1),
+    g.nEstrias || "",
+    g.striaMean ? r1(g.striaMean.trend) : "",
+    g.striaMean ? r1(g.striaMean.plunge) : "",
+    g.striaMean ? r1(g.striaMean.dispersion, 1) : "",
+    g.centroid ? g.centroid.lat.toFixed(5) : "",
+    g.centroid ? g.centroid.lon.toFixed(5) : "",
+    g.cinematicas.join(" / "),
+  ].map(csvCampo).join(","));
+  descargarCSV("estereogramas_resultados_" + hoy() + ".csv",
+               [cols.join(","), ...filas, ""].join("\n"));
+}
+
+/** Proyecto completo en JSON: las mediciones tal cual se editaron, más los
+ *  ajustes que cambian su interpretación (convención y zona UTM). Sin eso, un
+ *  archivo con rumbos podría releerse como dip direction y girar todo 90°. */
+function exportarProyectoJSON(measurements, convencion, zonaUtm) {
+  const datos = {
+    formato: "estereogramas-proyecto",
+    version: 1,
+    guardado: new Date().toISOString(),
+    convencion, zonaUtm,
+    mediciones: measurements,
+  };
+  descargarArchivo("estereogramas_proyecto_" + hoy() + ".json",
+                   JSON.stringify(datos, null, 2), "application/json");
+}
+
+/** Lee un proyecto JSON. Devuelve {error} en vez de lanzar, para avisar con un
+ *  mensaje entendible en vez de romper la app con un archivo cualquiera. */
+function leerProyectoJSON(texto) {
+  let d;
+  try { d = JSON.parse(texto); } catch (e) { return { error: "El archivo no es JSON válido." }; }
+  if (!d || !Array.isArray(d.mediciones)) {
+    return { error: "No parece un proyecto de Estereogramas: falta la lista de mediciones." };
+  }
+  const mediciones = d.mediciones.map((m, i) => ({
+    id: m.id || "imp-" + i + "-" + Math.random().toString(36).slice(2, 8),
+    orientacion: m.orientacion == null ? "" : m.orientacion,
+    manteo: m.manteo == null ? "" : m.manteo,
+    tipo: m.tipo || "", cinematica: m.cinematica || "",
+    striaTrend: m.striaTrend == null ? "" : m.striaTrend,
+    striaPlunge: m.striaPlunge == null ? "" : m.striaPlunge,
+    localidad: m.localidad || "",
+    lat: m.lat == null ? "" : m.lat, lon: m.lon == null ? "" : m.lon,
+    este: m.este == null ? "" : m.este, norte: m.norte == null ? "" : m.norte,
+    usar: m.usar !== false,
+  }));
+  return {
+    mediciones,
+    convencion: d.convencion === "strike" ? "strike" : "dd",
+    zonaUtm: ZONAS_UTM[d.zonaUtm] ? d.zonaUtm : "19S",
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -731,7 +811,7 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
   const sel = (id) => id === selectedId;
 
   return (
-    <div ref={setRef} style={{
+    <div ref={setRef} className="panel-grupo" style={{
       background: T.panel, border: `1px solid ${T.border}`, borderRadius: 10, padding: 12,
       outline: highlighted ? `3px solid ${T.accent}` : "3px solid transparent",
       transition: "outline-color .25s ease", scrollMarginTop: 16,
@@ -844,7 +924,7 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
         </div>
       )}
 
-      <div style={{ marginTop: 8, borderTop: `1px solid ${T.panelAlt}`, paddingTop: 6 }}>
+      <div className="no-imprimir" style={{ marginTop: 8, borderTop: `1px solid ${T.panelAlt}`, paddingTop: 6 }}>
         <button onClick={() => setVerLista(!verLista)}
                 style={{ ...btnStyle, padding: "3px 8px", fontSize: 11, fontWeight: 500 }}>
           {verLista ? "▾" : "▸"} Mediciones usadas ({group.n}/{group.nTotal})
@@ -1179,7 +1259,26 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
     ]);
   const delRow = (id) => setMeasurements((prev) => prev.filter((m) => m.id !== id));
   const fileInput = useRef(null);
+  const jsonInput = useRef(null);
   const [pending, setPending] = useState(null);   // CSV leído, esperando el mapeo
+
+  const onJson = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const r = leerProyectoJSON(String(ev.target.result));
+      if (r.error) { alert(r.error); return; }
+      // Reemplaza en vez de agregar: es "abrir un proyecto", no "importar"
+      if (measurements.length && !confirm(
+            `Se reemplazarán las ${measurements.length} filas actuales por las ${r.mediciones.length} del archivo. ¿Continuar?`)) return;
+      setMeasurements(r.mediciones);
+      setConvencion(r.convencion);
+      setZonaUtm(r.zonaUtm);
+    };
+    reader.readAsText(file, "UTF-8");
+    e.target.value = "";
+  };
 
   const onCsv = (e) => {
     const file = e.target.files[0];
@@ -1235,6 +1334,9 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
         <button style={btnStyle} onClick={descargarPlantilla}>Plantilla CSV</button>
         <button style={btnStyle} onClick={() => fileInput.current.click()}>Importar CSV</button>
         <input ref={fileInput} type="file" accept=".csv,text/csv" onChange={onCsv} style={{ display: "none" }} />
+        <button style={btnStyle} onClick={() => jsonInput.current.click()}
+                title="Cargar un proyecto guardado (reemplaza los datos actuales)">Abrir JSON</button>
+        <input ref={jsonInput} type="file" accept=".json,application/json" onChange={onJson} style={{ display: "none" }} />
         <button style={btnPrimary} onClick={addRow}>+ Agregar fila</button>
         <div style={{ fontSize: 11.5, color: T.text3, fontFamily: MONO }}>{measurements.length} filas</div>
       </div>
@@ -1373,24 +1475,53 @@ function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: T.pageBg, fontFamily: SANS, color: T.text }}>
-      <header style={{ background: T.hdrBg, color: T.hdrFg, padding: "14px 18px" }}>
+      <header className="no-imprimir" style={{ background: T.hdrBg, color: T.hdrFg, padding: "14px 18px" }}>
         <div style={{ fontSize: 17, fontWeight: 700 }}>Estereogramas</div>
         <div style={{ fontSize: 12, opacity: 0.75 }}>Análisis estructural en vivo — proyección de Schmidt</div>
       </header>
       <main style={{ maxWidth: 1400, margin: "0 auto", padding: 16, display: "flex", flexDirection: "column", gap: 16 }}>
-        <MeasurementsTable
-          measurements={measurements}
-          setMeasurements={setMeasurements}
-          convencion={convencion}
-          setConvencion={setConvencion}
-          showUtm={showUtm}
-          setShowUtm={setShowUtm}
-          zonaUtm={zonaUtm}
-          setZonaUtm={setZonaUtm}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          rowRefs={rowRefs}
-        />
+        <div className="no-imprimir">
+          <MeasurementsTable
+            measurements={measurements}
+            setMeasurements={setMeasurements}
+            convencion={convencion}
+            setConvencion={setConvencion}
+            showUtm={showUtm}
+            setShowUtm={setShowUtm}
+            zonaUtm={zonaUtm}
+            setZonaUtm={setZonaUtm}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            rowRefs={rowRefs}
+          />
+        </div>
+
+        <div className="no-imprimir" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: T.text3 }}>Exportar:</span>
+          <button style={btnStyle} disabled={!groups.length}
+                  onClick={() => exportarResultadosCSV(groups)}
+                  title="Tabla de resultados por grupo (promedios, Fisher, estrías, coordenadas)">
+            CSV de resultados
+          </button>
+          <button style={btnStyle} onClick={() => window.print()}
+                  title="Abre el diálogo de impresión; elegir «Guardar como PDF»">
+            PDF
+          </button>
+          <button style={btnStyle}
+                  onClick={() => exportarProyectoJSON(measurements, convencion, zonaUtm)}
+                  title="Guarda todo el proyecto para volver a abrirlo después">
+            Guardar JSON
+          </button>
+        </div>
+
+        <div className="solo-imprimir" style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>Estereogramas — análisis estructural</div>
+          <div style={{ fontSize: 11, color: T.text2 }}>
+            {groups.length} grupo{groups.length === 1 ? "" : "s"} ·{" "}
+            {convencion === "strike" ? "Rumbo (RHR)" : "Dip Direction"} · Zona {zonaUtm} ·{" "}
+            {new Date().toLocaleDateString("es-CL")}
+          </div>
+        </div>
 
         {groups.length === 0 ? (
           <div style={{ padding: 24, textAlign: "center", color: T.text3, background: T.panel, borderRadius: 10, border: `1px solid ${T.border}` }}>
@@ -1414,7 +1545,7 @@ function App() {
 
         <AxialPlaneFinder groups={groups} />
 
-        <section>
+        <section className="no-imprimir">
           <div style={{ fontSize: 13, fontWeight: 700, color: T.text2, marginBottom: 6 }}>Ubicación de los grupos</div>
           <MapPanel groups={groups} onMarkerClick={handleMarkerClick} />
         </section>

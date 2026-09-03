@@ -36,6 +36,23 @@
     @media (max-width: 760px) {
       input, select, textarea { font-size: 16px !important; }
     }
+    /* Impresión / "Guardar como PDF": se imprime el análisis, no la interfaz
+       de edición. Los estereogramas son SVG, así que salen vectoriales. */
+    .solo-imprimir { display: none; }
+    @media print {
+      @page { margin: 12mm; }
+      body { background: #fff; }
+      .no-imprimir { display: none !important; }
+      .solo-imprimir { display: block !important; }
+      /* Cada grupo entero en una página, sin cortarlo por la mitad */
+      .panel-grupo { break-inside: avoid; page-break-inside: avoid; }
+      /* Sin sombras ni fondos que gasten tinta */
+      .panel-grupo, .bloque-analisis {
+        border: 1px solid #999 !important;
+        outline: none !important;
+        box-shadow: none !important;
+      }
+    }
     #boot {
       position: fixed; inset: 0; display: flex; align-items: center;
       justify-content: center; flex-direction: column; gap: 14px;

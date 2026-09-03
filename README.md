@@ -36,6 +36,23 @@ el CSV). Se dibujan como puntos naranjos sobre el plano al que pertenecen, en la
   desviación y avisa si alguna se aparta más de 10° — normalmente significa un trend/plunge o un
   manteo mal anotado.
 
+## Exportar y guardar
+
+- **CSV de resultados** — una fila por grupo con los promedios, Fisher, estrías y coordenadas.
+  Es el equivalente al feature class que producía el script ArcGIS original
+  (`LOCALIDAD, TIPO, N_PUNTOS, RUMBO_PROM, DIP_PROM, DD_PROM, KAPPA, ALPHA95, LAT, LON`), más
+  `n_estrias`, `estria_trend_prom`, `estria_plunge_prom`, `estria_dispersion` y `cinematica`.
+- **PDF** — abre el diálogo de impresión del navegador («Guardar como PDF»). Se imprime el
+  análisis, no la interfaz: se ocultan la barra, la tabla, el mapa y los controles, y se agrega una
+  cabecera con la fecha, la convención y la zona. Como los estereogramas son SVG, salen
+  **vectoriales** (nítidos a cualquier zoom), que es la razón de usar la impresión del navegador en
+  vez de vendorizar una librería de PDF que los rasterizaría.
+- **Guardar JSON / Abrir JSON** — el proyecto completo: las mediciones tal cual quedaron editadas
+  (incluidas las casillas ✓ y las estrías) más la convención y la zona UTM. Esos dos ajustes van
+  dentro del archivo a propósito: sin ellos, un proyecto con rumbos podría reabrirse leído como dip
+  direction y girar todos los planos 90°. Al abrir, **reemplaza** los datos actuales (pregunta
+  antes), y si el archivo no es un proyecto válido avisa sin tocar nada.
+
 ## Espacio en pantalla
 
 La tabla tiene alto acotado (42vh) con scroll propio y encabezado fijo. Sin eso, con muchas
