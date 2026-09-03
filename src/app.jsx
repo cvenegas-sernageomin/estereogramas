@@ -406,8 +406,53 @@ function utmToLatLon(E, N, zona) {
   }
 }
 
+// Colores de los promedios guardados. El rojo (T.danger) es del promedio de la
+// selección actual y el naranjo (T.estria) de las estrías: no se repiten.
+const COLORES_SUB = ["#0F8B6C", "#B5179E", "#6D8B00", "#8A5A00", "#4A5A80", "#00798C"];
+
+// ─── estadística de un conjunto de mediciones ya resueltas ──────────
+// Aislada del agrupamiento porque el mismo cálculo corre varias veces por grupo:
+// para la selección actual y para cada promedio guardado.
+function estadisticaDeItems(items) {
+  const normales = items.map((r) => ddDipToNormal(r.dd, r.dip));
+  const mn = meanNormal(normales);
+  let ddMean = null, dipMean = null, strikeMean = null;
+  if (mn) { [ddMean, dipMean] = normalToDdDip(mn); strikeMean = ddToStrike(ddMean); }
+  const { R, kappa, alpha95 } = fisherStats(normales);
+  const withCoords = items.filter((r) => r.lat != null && r.lon != null);
+  const centroid = withCoords.length
+    ? {
+        lat: withCoords.reduce((a, r) => a + r.lat, 0) / withCoords.length,
+        lon: withCoords.reduce((a, r) => a + r.lon, 0) / withCoords.length,
+      }
+    : null;
+  const cinematicas = [...new Set(items.map((r) => (r.cinematica || "").trim()).filter(Boolean))];
+
+  // Promedio de estrías. Son datos AXIALES (una línea y su opuesta son la
+  // misma), así que un promedio vectorial simple se cancelaría con estrías
+  // casi opuestas: se usa el autovector principal del tensor de orientación.
+  const conEstria = items.filter((r) => r.stria);
+  let striaMean = null;
+  if (conEstria.length >= 2) {
+    const vecs = conEstria.map((r) => r.stria.vec);
+    const { vectors } = jacobi3x3(orientationTensor(vecs));
+    const e1 = vectors[0];
+    const [trend, plunge] = vectorToTrendPlunge(e1);
+    const angs = vecs.map((v) => toDeg(Math.acos(clamp1(Math.abs(dot3(v, e1))))));
+    striaMean = {
+      trend, plunge, n: conEstria.length,
+      dispersion: angs.reduce((a, b) => a + b, 0) / angs.length,
+    };
+  }
+  return {
+    n: items.length, ddMean, dipMean, strikeMean, R, kappa, alpha95, centroid, cinematicas,
+    striaMean, nEstrias: conEstria.length,
+    striasFueraDePlano: conEstria.filter((r) => r.stria.desviacion > 10).length,
+  };
+}
+
 // ─── agrupamiento por localidad + tipo (equivalente a run_analysis) ─
-function computeGroups(measurements, convencion, zonaUtm) {
+function computeGroups(measurements, convencion, zonaUtm, subconjuntos) {
   const resolved = measurements.map((m) => {
     const manteo = parseFloat(m.manteo);
     const orientRaw = parseFloat(m.orientacion);
@@ -417,16 +462,25 @@ function computeGroups(measurements, convencion, zonaUtm) {
     const tipo = (m.tipo || "").trim() || "SIN_TIPO";
     const latN = m.lat !== "" && m.lat != null ? parseFloat(m.lat) : NaN;
     const lonN = m.lon !== "" && m.lon != null ? parseFloat(m.lon) : NaN;
-    let lat = isNaN(latN) ? null : latN;
-    let lon = isNaN(lonN) ? null : lonN;
+    // Se validan los rangos: un Norte UTM pegado en la casilla Lat (6298000)
+    // mandaba el marcador fuera del mundo en vez de descartarse.
+    let lat = isFinite(latN) && Math.abs(latN) <= 90 ? latN : null;
+    let lon = isFinite(lonN) && Math.abs(lonN) <= 180 ? lonN : null;
+    const coordFueraDeRango =
+      (isFinite(latN) && Math.abs(latN) > 90) || (isFinite(lonN) && Math.abs(lonN) > 180);
     // Si no hay lat/lon pero sí UTM, se convierte: así un CSV con sólo Este/Norte
     // ubica igual los grupos en el mapa.
+    let utmFueraDeRango = false;
     if (lat == null || lon == null) {
       const E = m.este !== "" && m.este != null ? parseFloat(m.este) : NaN;
       const N = m.norte !== "" && m.norte != null ? parseFloat(m.norte) : NaN;
-      if (!isNaN(E) && !isNaN(N)) {
-        const ll = utmToLatLon(E, N, zonaUtm);
-        if (ll) { lat = ll.lat; lon = ll.lon; }
+      if (isFinite(E) && isFinite(N)) {
+        if (E >= 1e5 && E <= 1e6 && N >= 0 && N <= 1e7) {
+          const ll = utmToLatLon(E, N, zonaUtm);
+          if (ll) { lat = ll.lat; lon = ll.lon; }
+        } else {
+          utmFueraDeRango = true;   // p. ej. un Este de 346,5 por un punto de miles
+        }
       }
     }
     // Estría (lineación sobre el plano de falla): trend/plunge propios.
@@ -448,6 +502,7 @@ function computeGroups(measurements, convencion, zonaUtm) {
       dd, dip: valid ? manteo : null,
       usar: m.usar !== false,          // por defecto entra en el promedio
       lat, lon, stria,
+      coordInvalida: coordFueraDeRango || utmFueraDeRango,
     };
   });
 
@@ -459,48 +514,35 @@ function computeGroups(measurements, convencion, zonaUtm) {
     groupsMap.get(key).items.push(r);
   }
 
+  const porId = new Map(resolved.map((r) => [r.id, r]));
   const groups = [];
   for (const g of groupsMap.values()) {
     // El promedio y Fisher salen SÓLO de las mediciones marcadas; las demás se
     // siguen dibujando (atenuadas) para poder ver qué se dejó fuera.
     const usados = g.items.filter((r) => r.usar);
-    const normales = usados.map((r) => ddDipToNormal(r.dd, r.dip));
-    const mn = meanNormal(normales);
-    let ddMean = null, dipMean = null, strikeMean = null;
-    if (mn) { [ddMean, dipMean] = normalToDdDip(mn); strikeMean = ddToStrike(ddMean); }
-    const { R, kappa, alpha95 } = fisherStats(normales);
-    const withCoords = usados.filter((r) => r.lat != null && r.lon != null);
-    const centroid = withCoords.length
-      ? {
-          lat: withCoords.reduce((a, r) => a + r.lat, 0) / withCoords.length,
-          lon: withCoords.reduce((a, r) => a + r.lon, 0) / withCoords.length,
-        }
-      : null;
-    const cinematicas = [...new Set(usados.map((r) => (r.cinematica || "").trim()).filter(Boolean))];
 
-    // Promedio de estrías. Son datos AXIALES (una línea y su opuesta son la
-    // misma), así que un promedio vectorial simple se cancelaría con estrías
-    // casi opuestas: se usa el autovector principal del tensor de orientación.
-    const conEstria = usados.filter((r) => r.stria);
-    let striaMean = null;
-    if (conEstria.length >= 2) {
-      const vecs = conEstria.map((r) => r.stria.vec);
-      const { vectors } = jacobi3x3(orientationTensor(vecs));
-      const e1 = vectors[0];
-      const [trend, plunge] = vectorToTrendPlunge(e1);
-      const angs = vecs.map((v) => toDeg(Math.acos(clamp1(Math.abs(dot3(v, e1))))));
-      striaMean = {
-        trend, plunge, n: conEstria.length,
-        dispersion: angs.reduce((a, b) => a + b, 0) / angs.length,
-      };
-    }
-    const striasFueraDePlano = conEstria.filter((r) => r.stria.desviacion > 10).length;
+    // Promedios guardados del grupo. Se recalculan con los datos actuales a
+    // partir de los ids que se guardaron: así, corregir un manteo mal anotado
+    // actualiza también los promedios ya guardados en vez de dejar un número
+    // viejo que ya no corresponde a ninguna medición.
+    const guardados = (subconjuntos || [])
+      .filter((s) => s.groupKey === g.key)
+      .map((s) => {
+        const items = (s.ids || [])
+          .map((id) => porId.get(id))
+          .filter((r) => r && r.valid && `${r.localidad}|||${r.tipo}` === g.key);
+        return {
+          id: s.id, nombre: s.nombre, color: s.color, ids: s.ids,
+          nGuardado: (s.ids || []).length,      // cuántas eran al guardarlo
+          ...estadisticaDeItems(items),
+        };
+      });
 
     groups.push({
       key: g.key, localidad: g.localidad, tipo: g.tipo,
-      items: g.items, usados, n: usados.length, nTotal: g.items.length,
-      ddMean, dipMean, strikeMean, R, kappa, alpha95, centroid, cinematicas,
-      striaMean, nEstrias: conEstria.length, striasFueraDePlano,
+      items: g.items, usados, nTotal: g.items.length,
+      ...estadisticaDeItems(usados),
+      guardados,
     });
   }
   groups.sort((a, b) => a.localidad.localeCompare(b.localidad) || a.tipo.localeCompare(b.tipo));
@@ -514,7 +556,10 @@ function splitCsvLine(line, delim) {
   const out = []; let cur = ""; let inQ = false;
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
-    if (c === '"') { inQ = !inQ; continue; }
+    if (c === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; continue; }  // "" = comilla literal
+      inQ = !inQ; continue;
+    }
     if (c === delim && !inQ) { out.push(cur); cur = ""; continue; }
     cur += c;
   }
@@ -548,57 +593,215 @@ const SINONIMOS_CSV = {
   striaTrend: ["estria_trend", "estría_trend", "trend", "estria", "estría", "lineacion_trend", "lineación_trend", "trend_estria", "azimut_estria"],
   striaPlunge: ["estria_plunge", "estría_plunge", "plunge", "buzamiento_estria", "plunge_estria", "lineacion_plunge", "lineación_plunge"],
   localidad: ["localidad", "sitio", "estacion", "estación", "ubicacion", "ubicación", "sector"],
-  lat: ["lat", "latitud", "latitude", "y_wgs84"],
-  lon: ["lon", "lng", "long", "longitud", "longitude", "x_wgs84"],
-  este: ["este", "easting", "utm_e", "utm_este", "x"],
-  norte: ["norte", "northing", "utm_n", "utm_norte", "y"],
+  lat: ["lat", "latitud", "latitude", "y_wgs84", "lat_wgs84", "gps_lat", "point_y", "y_geo", "coord_y_geo"],
+  lon: ["lon", "lng", "long", "longitud", "longitude", "x_wgs84", "lon_wgs84", "gps_lon", "point_x", "x_geo", "coord_x_geo"],
+  este: ["este", "easting", "utm_e", "utm_este", "este_utm", "utm_x", "x_utm", "coord_x", "x"],
+  norte: ["norte", "northing", "utm_n", "utm_norte", "norte_utm", "utm_y", "y_utm", "coord_y", "y"],
 };
 
-// Excel en español exporta con ";" y coma decimal: parseFloat("-33,45") daría -33
-// y movería el punto cientos de km sin avisar. Se normaliza a punto al importar.
-const csvNum = (s) => {
-  const t = String(s == null ? "" : s).trim();
-  return /^-?\d+,\d+$/.test(t) ? t.replace(",", ".") : t;
-};
+// Normaliza un número tal como lo escriben Excel y ArcGIS en español, donde el
+// decimal es coma y los miles punto: parseFloat("-33,45") daría -33 y
+// parseFloat("6.298.000") daría 6.298 — los dos mueven el punto cientos de km
+// sin avisar. También acepta el hemisferio como letra ("33,45 S" → -33,45).
+// Un valor con una sola coma se lee siempre como decimal: en Chile "33,450" es
+// 33,45 grados, no 33.450.
+function limpiarNumero(v) {
+  const orig = String(v == null ? "" : v).trim();
+  let t = orig.replace(/[\s']/g, "");
+  if (!t) return "";
+  let neg = false;
+  // Una sola letra, al principio o al final. Con letra en los dos extremos no se
+  // toca: "N45W" es un rumbo por cuadrante, no un número con hemisferio, y
+  // convertirlo a 45 sería un error de 90° invisible.
+  const alInicio = /^[NSEWO]/i.test(t), alFinal = /[NSEWO]$/i.test(t);
+  if (alInicio !== alFinal) {
+    const letra = alInicio ? t[0] : t[t.length - 1];
+    t = alInicio ? t.slice(1) : t.slice(0, -1);
+    if (/[SWO]/i.test(letra)) neg = true;
+  }
+  if (!/^[+-]?[\d.,]*\d$/.test(t)) return orig;   // no es un número: se deja igual
+  const comas = (t.match(/,/g) || []).length;
+  const puntos = (t.match(/\./g) || []).length;
+  if (comas && puntos) {
+    // El separador decimal es el último que aparece; el otro es de miles.
+    if (t.lastIndexOf(",") > t.lastIndexOf(".")) t = t.replace(/\./g, "").replace(",", ".");
+    else t = t.replace(/,/g, "");
+  } else if (comas === 1) {
+    t = t.replace(",", ".");
+  } else if (comas > 1) {
+    t = t.replace(/,/g, "");        // 1,234,567 → miles
+  } else if (puntos > 1) {
+    t = t.replace(/\./g, "");       // 6.298.000 → miles
+  }
+  if (neg && t[0] !== "-") t = "-" + t;
+  return t;
+}
+
+// Delimitadores que se prueban. Se elige por consistencia: el que hace que las
+// filas tengan las mismas columnas que el encabezado. Contar separadores sólo en
+// el encabezado fallaba con tabuladores y con nombres de columna que traen comas.
+const DELIMS_CSV = [",", ";", "\t", "|"];
+
+function elegirDelimitador(lines) {
+  let mejor = ",", mejorPuntaje = -1;
+  for (const d of DELIMS_CSV) {
+    const nCols = splitCsvLine(lines[0], d).length;
+    if (nCols < 2) continue;
+    const muestra = lines.slice(1, 21);
+    const calzan = muestra.filter((l) => splitCsvLine(l, d).length === nCols).length;
+    const puntaje = (muestra.length ? calzan / muestra.length : 1) * 100 + nCols;
+    if (puntaje > mejorPuntaje) { mejorPuntaje = puntaje; mejor = d; }
+  }
+  return mejor;
+}
 
 /** Parte el CSV en encabezado + filas crudas, sin decidir todavía qué es cada columna. */
 function parseCsvTable(text) {
-  const lines = text.replace(/\r/g, "").split("\n").filter((l) => l.trim().length);
+  const lines = String(text).replace(/^\uFEFF/, "").replace(/\r/g, "")
+    .split("\n").filter((l) => l.trim().length);
   if (!lines.length) return null;
-  const delim = (lines[0].match(/;/g) || []).length > (lines[0].match(/,/g) || []).length ? ";" : ",";
+  const delim = elegirDelimitador(lines);
   const header = splitCsvLine(lines[0], delim);
   const rows = [];
+  let irregulares = 0;
   for (let i = 1; i < lines.length; i++) {
     const cols = splitCsvLine(lines[i], delim);
     if (!cols.some((c) => c !== "")) continue;
+    if (cols.length !== header.length) irregulares++;
     rows.push(cols);
   }
-  return { header, rows, delim };
+  const avisos = [];
+  if (irregulares) {
+    // Caso típico: coma decimal con coma separadora. "-33,45" se parte en dos
+    // columnas y todo lo que viene después queda corrido — las coordenadas
+    // terminan leyéndose de la columna equivocada.
+    avisos.push(`${irregulares} de ${rows.length} filas no tienen las mismas ${header.length} ` +
+      `columnas que el encabezado; las columnas quedan corridas. Suele pasar cuando el archivo ` +
+      `usa coma decimal y coma separadora a la vez: guárdalo con «;» o con punto decimal.`);
+  }
+  return { header, rows, delim, avisos };
 }
 
-/** Propuesta de mapeo por nombre de columna; -1 = sin asignar. */
-function guessMapping(header) {
-  const low = header.map((h) => h.trim().toLowerCase());
+// El punto como separador de miles es ambiguo cuando hay un solo grupo:
+// "346.500" puede ser 346,5 o 346.500. En un Este/Norte UTM la ambigüedad no es
+// real —no existe una coordenada de 346 m— así que ahí se lee como miles.
+function limpiarUtm(v) {
+  const t = limpiarNumero(v);
+  return /^[+-]?\d{1,3}\.\d{3}$/.test(t) ? t.replace(".", "") : t;
+}
+
+// Perfil numérico de una columna. Es la única forma de distinguir una columna
+// «X» que trae longitud de una que trae Este UTM: el nombre no alcanza.
+function perfilColumna(rows, idx, limpiar) {
+  if (idx == null || idx < 0) return null;
+  const vals = [];
+  for (const cols of rows) {
+    const v = parseFloat((limpiar || limpiarNumero)(cols[idx]));
+    if (isFinite(v)) vals.push(Math.abs(v));
+  }
+  if (!vals.length) return null;
+  vals.sort((a, b) => a - b);
+  return { n: vals.length, mediana: vals[Math.floor(vals.length / 2)], max: vals[vals.length - 1] };
+}
+
+/** Corrige el mapeo de coordenadas mirando los VALORES además del nombre, y
+ *  devuelve los avisos para mostrarlos antes de importar. */
+function ajustarCoordenadas(mapping, header, rows) {
+  const m = { ...mapping };
+  const avisos = [];
+  const nom = (i) => (header[i] || "").trim() || `columna ${i + 1}`;
+  const p = {};
+  const perfilar = () => {
+    for (const k of ["lat", "lon"]) p[k] = perfilColumna(rows, m[k]);
+    // Este/Norte se perfilan como se van a importar (con "346.500" = 346.500 m),
+    // si no el aviso de rango contradiría lo que muestra la vista previa.
+    for (const k of ["este", "norte"]) p[k] = perfilColumna(rows, m[k], limpiarUtm);
+  };
+  perfilar();
+
+  // Columnas «X»/«Y»/«POINT_X» que en realidad traen grados, no metros.
+  if (m.este >= 0 && p.este && p.este.max <= 180 && m.lon < 0) {
+    avisos.push(`«${nom(m.este)}» trae valores de hasta ${p.este.max}: son grados, no metros UTM. Se asignó a Lon.`);
+    m.lon = m.este; m.este = -1; perfilar();
+  }
+  if (m.norte >= 0 && p.norte && p.norte.max <= 90 && m.lat < 0) {
+    avisos.push(`«${nom(m.norte)}» trae valores de hasta ${p.norte.max}: son grados, no metros UTM. Se asignó a Lat.`);
+    m.lat = m.norte; m.norte = -1; perfilar();
+  }
+  // Y al revés: una columna «lat»/«lon» que trae metros UTM.
+  if (m.lat >= 0 && p.lat && p.lat.mediana > 90 && m.norte < 0) {
+    avisos.push(`«${nom(m.lat)}» trae valores muy grandes para una latitud: se asignó a Norte (UTM).`);
+    m.norte = m.lat; m.lat = -1; perfilar();
+  }
+  if (m.lon >= 0 && p.lon && p.lon.mediana > 180 && m.este < 0) {
+    avisos.push(`«${nom(m.lon)}» trae valores muy grandes para una longitud: se asignó a Este (UTM).`);
+    m.este = m.lon; m.lon = -1; perfilar();
+  }
+  // Pares invertidos. En Chile el Norte UTM es del orden de 10⁶ y el Este de 10⁵.
+  if (m.este >= 0 && m.norte >= 0 && p.este && p.norte &&
+      p.este.mediana > 1e6 && p.norte.mediana < 1e6) {
+    avisos.push(`«${nom(m.este)}» y «${nom(m.norte)}» parecen invertidos (el Norte UTM es mucho mayor que el Este): se cambiaron.`);
+    const t = m.este; m.este = m.norte; m.norte = t; perfilar();
+  }
+  if (m.lat >= 0 && m.lon >= 0 && p.lat && p.lon && p.lat.max > 90 && p.lon.max <= 90) {
+    avisos.push(`«${nom(m.lat)}» y «${nom(m.lon)}» parecen invertidos (la latitud no pasa de 90°): se cambiaron.`);
+    const t = m.lat; m.lat = m.lon; m.lon = t; perfilar();
+  }
+  return { mapping: m, avisos };
+}
+
+/** Avisos de rango del mapeo que está puesto ahora. Van aparte de
+ *  ajustarCoordenadas porque se recalculan en vivo: el usuario puede cambiar
+ *  cualquier asignación a mano después de la propuesta inicial. */
+function avisosDeRango(mapping, header, rows) {
+  const avisos = [];
+  const nom = (i) => (header[i] || "").trim() || `columna ${i + 1}`;
+  for (const k of ["este", "norte"]) {
+    const p = perfilColumna(rows, mapping[k], limpiarUtm);
+    if (p && (p.mediana < 1e4 || p.mediana > 1e7)) {
+      avisos.push(`«${nom(mapping[k])}» tiene valores fuera del rango UTM (mediana ${p.mediana}): ` +
+        `esas filas no se van a poder ubicar en el mapa.`);
+    }
+  }
+  const pLat = perfilColumna(rows, mapping.lat);
+  if (pLat && pLat.max > 90) avisos.push(`«${nom(mapping.lat)}» tiene valores mayores que 90: no son latitudes válidas.`);
+  const pLon = perfilColumna(rows, mapping.lon);
+  if (pLon && pLon.max > 180) avisos.push(`«${nom(mapping.lon)}» tiene valores mayores que 180: no son longitudes válidas.`);
+  return avisos;
+}
+
+/** Propuesta de mapeo por nombre de columna, corregida con los valores.
+ *  -1 = sin asignar. Ninguna columna se asigna a dos campos: si lo hiciera, el
+ *  mismo número aparecería en dos casillas distintas. */
+function guessMapping(header, rows) {
+  const low = header.map((h) => h.trim().toLowerCase().replace(/\s+/g, "_"));
   const m = {};
-  for (const { key } of CAMPOS_CSV) m[key] = low.findIndex((h) => SINONIMOS_CSV[key].includes(h));
-  return m;
+  const usadas = new Set();
+  for (const { key } of CAMPOS_CSV) {
+    const i = low.findIndex((h, idx) => !usadas.has(idx) && SINONIMOS_CSV[key].includes(h));
+    m[key] = i;
+    if (i >= 0) usadas.add(i);
+  }
+  return ajustarCoordenadas(m, header, rows || []);
 }
 
 function rowsToMeasurements(rows, mapping) {
   const pick = (cols, i) => (i >= 0 && cols[i] != null ? String(cols[i]).trim() : "");
+  const num = (cols, i) => limpiarNumero(pick(cols, i));
   return rows.map((cols) => ({
     id: (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()),
-    orientacion: csvNum(pick(cols, mapping.orientacion)),
-    manteo: csvNum(pick(cols, mapping.manteo)),
+    orientacion: num(cols, mapping.orientacion),
+    manteo: num(cols, mapping.manteo),
     tipo: pick(cols, mapping.tipo),
-    striaTrend: csvNum(pick(cols, mapping.striaTrend)),
-    striaPlunge: csvNum(pick(cols, mapping.striaPlunge)),
+    striaTrend: num(cols, mapping.striaTrend),
+    striaPlunge: num(cols, mapping.striaPlunge),
     cinematica: pick(cols, mapping.cinematica),
     localidad: pick(cols, mapping.localidad),
-    lat: csvNum(pick(cols, mapping.lat)),
-    lon: csvNum(pick(cols, mapping.lon)),
-    este: csvNum(pick(cols, mapping.este)),
-    norte: csvNum(pick(cols, mapping.norte)),
+    lat: num(cols, mapping.lat),
+    lon: num(cols, mapping.lon),
+    este: limpiarUtm(pick(cols, mapping.este)),
+    norte: limpiarUtm(pick(cols, mapping.norte)),
+    usar: true,
   }));
 }
 
@@ -646,22 +849,30 @@ function csvCampo(v) {
 /** CSV de RESULTADOS por grupo: equivale al feature class que producía el
  *  script ArcGIS original (LOCALIDAD, TIPO, N_PUNTOS, RUMBO_PROM, ...). */
 function exportarResultadosCSV(groups) {
-  const cols = ["localidad", "tipo", "n_usadas", "n_total", "rumbo_prom", "manteo_prom",
-                "dd_prom", "kappa", "alpha95", "n_estrias", "estria_trend_prom",
+  const cols = ["localidad", "tipo", "promedio", "n_planos", "n_total_grupo", "rumbo_prom",
+                "manteo_prom", "dd_prom", "kappa", "alpha95", "n_estrias", "estria_trend_prom",
                 "estria_plunge_prom", "estria_dispersion", "lat", "lon", "cinematica"];
   const r1 = (x, d = 0) => (x == null || isNaN(x) ? "" : x.toFixed(d));
-  const filas = groups.map((g) => [
-    g.localidad, g.tipo, g.n, g.nTotal,
-    r1(g.strikeMean), r1(g.dipMean), r1(g.ddMean),
-    r1(g.kappa), r1(g.alpha95, 1),
-    g.nEstrias || "",
-    g.striaMean ? r1(g.striaMean.trend) : "",
-    g.striaMean ? r1(g.striaMean.plunge) : "",
-    g.striaMean ? r1(g.striaMean.dispersion, 1) : "",
-    g.centroid ? g.centroid.lat.toFixed(5) : "",
-    g.centroid ? g.centroid.lon.toFixed(5) : "",
-    g.cinematicas.join(" / "),
-  ].map(csvCampo).join(","));
+  // Una fila por promedio: la selección actual y, además, cada promedio guardado
+  // del grupo. Así quedan en el mismo archivo el ejercicio con todos los datos y
+  // el que usó sólo un subconjunto.
+  const fila = (g, nombre, e) => [
+    g.localidad, g.tipo, nombre, e.n, g.nTotal,
+    r1(e.strikeMean), r1(e.dipMean), r1(e.ddMean),
+    r1(e.kappa), r1(e.alpha95, 1),
+    e.nEstrias || "",
+    e.striaMean ? r1(e.striaMean.trend) : "",
+    e.striaMean ? r1(e.striaMean.plunge) : "",
+    e.striaMean ? r1(e.striaMean.dispersion, 1) : "",
+    e.centroid ? e.centroid.lat.toFixed(5) : "",
+    e.centroid ? e.centroid.lon.toFixed(5) : "",
+    e.cinematicas.join(" / "),
+  ].map(csvCampo).join(",");
+  const filas = [];
+  for (const g of groups) {
+    filas.push(fila(g, "Selección actual", g));
+    for (const s of g.guardados || []) filas.push(fila(g, s.nombre, s));
+  }
   descargarCSV("estereogramas_resultados_" + hoy() + ".csv",
                [cols.join(","), ...filas, ""].join("\n"));
 }
@@ -669,13 +880,14 @@ function exportarResultadosCSV(groups) {
 /** Proyecto completo en JSON: las mediciones tal cual se editaron, más los
  *  ajustes que cambian su interpretación (convención y zona UTM). Sin eso, un
  *  archivo con rumbos podría releerse como dip direction y girar todo 90°. */
-function exportarProyectoJSON(measurements, convencion, zonaUtm) {
+function exportarProyectoJSON(measurements, convencion, zonaUtm, subconjuntos) {
   const datos = {
     formato: "estereogramas-proyecto",
-    version: 1,
+    version: 2,
     guardado: new Date().toISOString(),
     convencion, zonaUtm,
     mediciones: measurements,
+    subconjuntos: subconjuntos || [],
   };
   descargarArchivo("estereogramas_proyecto_" + hoy() + ".json",
                    JSON.stringify(datos, null, 2), "application/json");
@@ -701,8 +913,22 @@ function leerProyectoJSON(texto) {
     este: m.este == null ? "" : m.este, norte: m.norte == null ? "" : m.norte,
     usar: m.usar !== false,
   }));
+  // Los promedios guardados sólo tienen sentido si sus ids existen: un archivo
+  // v1 no los trae, y uno editado a mano podría traer ids que ya no están.
+  const idsValidos = new Set(mediciones.map((m) => m.id));
+  const subconjuntos = (Array.isArray(d.subconjuntos) ? d.subconjuntos : [])
+    .filter((s) => s && typeof s.groupKey === "string" && Array.isArray(s.ids))
+    .map((s, i) => ({
+      id: s.id || "sub-" + i + "-" + Math.random().toString(36).slice(2, 8),
+      groupKey: s.groupKey,
+      nombre: String(s.nombre || `Promedio ${i + 1}`),
+      color: typeof s.color === "string" && /^#[0-9a-f]{3,8}$/i.test(s.color)
+        ? s.color : COLORES_SUB[i % COLORES_SUB.length],
+      ids: s.ids.filter((id) => idsValidos.has(id)),
+    }))
+    .filter((s) => s.ids.length);
   return {
-    mediciones,
+    mediciones, subconjuntos,
     convencion: d.convencion === "strike" ? "strike" : "dd",
     zonaUtm: ZONAS_UTM[d.zonaUtm] ? d.zonaUtm : "19S",
   };
@@ -793,8 +1019,17 @@ function MapPanel({ groups, onMarkerClick }) {
 // ═══════════════════════════════════════════════════════════════
 function fmt(n, d = 0) { return n == null || isNaN(n) ? "—" : n.toFixed(d); }
 
-function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, onSelect }) {
+function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, onSelect,
+                          onGuardarPromedio, onBorrarPromedio, onRestaurarPromedio }) {
   const [verLista, setVerLista] = useState(false);
+  // Promedios guardados con datos suficientes para dibujarse
+  const subs = (group.guardados || []).filter((s) => s.ddMean != null);
+  const subDibujo = subs.map((s) => ({
+    s,
+    linea: svgPoints(greatCircleXY(s.ddMean, s.dipMean)),
+    polo: equalAreaProject(mod360(s.ddMean + 180), 90 - s.dipMean),
+    estria: s.striaMean ? equalAreaProject(s.striaMean.trend, s.striaMean.plunge) : null,
+  }));
   // Se dibujan todas, pero las excluidas van atenuadas: hay que poder ver qué
   // se dejó fuera del promedio.
   const dibujo = group.items.map((r) => ({
@@ -822,7 +1057,7 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
           <div style={{ fontSize: 11.5, color: T.text3 }}>{group.tipo}</div>
         </div>
         <div style={{ fontSize: 11, color: T.text2, fontFamily: MONO, textAlign: "right" }}>
-          n={group.n}
+          N = {group.n}
           {excluidas > 0 && <span style={{ color: T.text3 }}> de {group.nTotal}</span>}
         </div>
       </div>
@@ -840,6 +1075,11 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
                         strokeDasharray={d.r.usar ? undefined : "0.03 0.03"}
                         opacity={sel(d.r.id) ? 1 : d.r.usar ? 0.55 : 0.4} />
             ))}
+            {/* Promedios guardados: cada uno con su color, bajo el promedio actual */}
+            {subDibujo.map((d) => (
+              <polyline key={"s" + d.s.id} points={d.linea} fill="none" stroke={d.s.color}
+                        strokeWidth="0.018" strokeDasharray="0.06 0.03" />
+            ))}
             {meanPlaneLine && <polyline points={meanPlaneLine} fill="none" stroke={T.danger} strokeWidth="0.022" />}
             {/* Estrías: la lineación se proyecta como un punto sobre su plano */}
             {dibujo.filter((d) => d.estria).map((d) => (
@@ -851,6 +1091,10 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
               <circle cx={meanStria[0]} cy={-meanStria[1]} r="0.045"
                       fill="none" stroke={T.estria} strokeWidth="0.018" />
             )}
+            {subDibujo.filter((d) => d.estria).map((d) => (
+              <circle key={"se" + d.s.id} cx={d.estria[0]} cy={-d.estria[1]} r="0.038"
+                      fill="none" stroke={d.s.color} strokeWidth="0.014" strokeDasharray="0.03 0.02" />
+            ))}
             {/* Zonas de clic anchas y transparentes: una línea de 0.01 es
                 imposible de acertar con el dedo o el mouse. */}
             {dibujo.map((d) => (
@@ -873,6 +1117,10 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
                       strokeWidth="0.008"
                       opacity={sel(d.r.id) ? 1 : d.r.usar ? 0.6 : 0.7} />
             ))}
+            {subDibujo.map((d) => (
+              <circle key={"sp" + d.s.id} cx={d.polo[0]} cy={-d.polo[1]} r="0.035"
+                      fill="none" stroke={d.s.color} strokeWidth="0.016" />
+            ))}
             {meanPole && <circle cx={meanPole[0]} cy={-meanPole[1]} r="0.04" fill={T.danger} stroke="#fff" strokeWidth="0.008" />}
             {dibujo.map((d) => (
               <circle key={"h" + d.r.id} cx={d.polo[0]} cy={-d.polo[1]} r="0.055" fill="transparent"
@@ -888,8 +1136,26 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
           <RoseDiagram group={group} />
         </div>
       </div>
+      <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.panelAlt}`,
+                    display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.text2 }}>
+          <span style={{ color: T.danger }}>■</span> Promedio actual
+        </div>
+        <div style={{ fontSize: 11.5, fontFamily: MONO, color: T.text2 }}>
+          N = {group.n} plano{group.n === 1 ? "" : "s"}
+          {excluidas > 0 && <span style={{ color: T.text3 }}> (de {group.nTotal})</span>}
+          {group.nEstrias > 0 && <span> · {group.nEstrias} estría{group.nEstrias === 1 ? "" : "s"}</span>}
+        </div>
+        <div style={{ flex: 1 }} />
+        <button className="no-imprimir"
+                style={{ ...btnStyle, padding: "3px 9px", fontSize: 11, fontWeight: 600 }}
+                onClick={() => onGuardarPromedio && onGuardarPromedio(group)}
+                title="Guarda este promedio con las mediciones marcadas ahora, para compararlo con otro">
+          + Guardar este promedio
+        </button>
+      </div>
       <div style={{
-        marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.panelAlt}`,
+        marginTop: 4,
         display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4,
         fontSize: 11, fontFamily: MONO, color: T.text2,
       }}>
@@ -921,6 +1187,59 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
               revisar trend/plunge o el manteo.
             </div>
           )}
+        </div>
+      )}
+
+      {group.guardados && group.guardados.length > 0 && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.panelAlt}` }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.text2, marginBottom: 4 }}>
+            Promedios guardados
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {group.guardados.map((s) => (
+              <div key={s.id} className="bloque-analisis"
+                   style={{ border: `1px solid ${T.border}`, borderLeft: `4px solid ${s.color}`,
+                            borderRadius: 6, padding: "5px 8px" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: T.text2 }}>{s.nombre}</span>
+                  <span style={{ fontSize: 11.5, fontFamily: MONO, color: T.text2 }}>
+                    N = {s.n} plano{s.n === 1 ? "" : "s"}
+                    {s.n !== s.nGuardado && (
+                      <span style={{ color: T.danger }} title="Se borraron o cambiaron mediciones de este promedio">
+                        {" "}(se guardó con {s.nGuardado})
+                      </span>
+                    )}
+                  </span>
+                  <div style={{ flex: 1 }} />
+                  <button className="no-imprimir"
+                          style={{ ...btnStyle, padding: "1px 7px", fontSize: 10.5, fontWeight: 500 }}
+                          onClick={() => onRestaurarPromedio && onRestaurarPromedio(group, s)}
+                          title="Vuelve a marcar exactamente estas mediciones en la tabla">
+                    marcar
+                  </button>
+                  <button className="no-imprimir"
+                          style={{ ...btnStyle, padding: "1px 7px", fontSize: 10.5, fontWeight: 500, color: T.danger, borderColor: T.danger }}
+                          onClick={() => onBorrarPromedio && onBorrarPromedio(s.id)}>✕</button>
+                </div>
+                <div style={{ fontSize: 11, fontFamily: MONO, color: T.text2, marginTop: 2 }}>
+                  {s.ddMean == null
+                    ? <span style={{ color: T.danger }}>sin mediciones válidas</span>
+                    : <>Rumbo {fmt(s.strikeMean)}° · Manteo {fmt(s.dipMean)}° · DD {fmt(s.ddMean)}°
+                        {" · "}κ {s.kappa != null ? fmt(s.kappa) : "—"}
+                        {" · "}α95 {s.alpha95 != null ? fmt(s.alpha95, 1) + "°" : "—"}</>}
+                </div>
+                {s.nEstrias > 0 && (
+                  <div style={{ fontSize: 11, fontFamily: MONO, color: T.text2 }}>
+                    Estrías N = {s.nEstrias}
+                    {s.striaMean
+                      ? <> · Trend {fmt(s.striaMean.trend)}° · Plunge {fmt(s.striaMean.plunge)}°
+                          <span style={{ color: T.text3 }}> · dispersión {fmt(s.striaMean.dispersion, 1)}°</span></>
+                      : <span style={{ color: T.text3 }}> · se necesitan 2 para promediar</span>}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1142,11 +1461,25 @@ const thSticky = {
 // Panel de mapeo: aparece al elegir un CSV y deja asignar a mano qué columna
 // va a qué campo, con vista previa de las primeras filas antes de importar.
 function CsvMapper({ pending, setPending, onImport, onCancel, convencion }) {
-  const { header, rows, mapping, fileName } = pending;
+  const { header, rows, mapping, fileName, avisos } = pending;
   const setCol = (key, idx) =>
     setPending({ ...pending, mapping: { ...mapping, [key]: idx } });
   const faltan = CAMPOS_CSV.filter((c) => c.req && mapping[c.key] < 0);
   const preview = rowsToMeasurements(rows.slice(0, 3), mapping);
+
+  // Una misma columna asignada a dos campos deja el mismo número en las dos
+  // casillas (típico entre Lat/Lon y Este/Norte). Se avisa en vez de dejarlo pasar.
+  const porColumna = {};
+  for (const c of CAMPOS_CSV) {
+    if (mapping[c.key] >= 0) {
+      if (!porColumna[mapping[c.key]]) porColumna[mapping[c.key]] = [];
+      porColumna[mapping[c.key]].push(c.label);
+    }
+  }
+  const duplicadas = Object.keys(porColumna)
+    .filter((i) => porColumna[i].length > 1)
+    .map((i) => `«${(header[i] || "").trim() || "columna " + (+i + 1)}» está asignada a ${porColumna[i].join(" y a ")}: ` +
+                `los dos campos van a quedar con el mismo número.`);
 
   // Si el nombre de la columna de orientación contradice el toggle global, avisar:
   // importar rumbos leyéndolos como dip direction es un error de 90° que no se nota.
@@ -1196,6 +1529,13 @@ function CsvMapper({ pending, setPending, onImport, onCancel, convencion }) {
           Si no calzan, los planos quedan girados 90°.
         </div>
       )}
+
+      {[...duplicadas, ...avisosDeRango(mapping, header, rows), ...(avisos || [])].map((a, i) => (
+        <div key={i} style={{ fontSize: 12, color: "#8A5A00", background: "#FFF4DB", border: "1px solid #E8C77A",
+                              borderRadius: 6, padding: "6px 9px", marginBottom: 8 }}>
+          {a}
+        </div>
+      ))}
 
       <div style={{ fontSize: 11, color: T.text3, marginBottom: 4 }}>Vista previa:</div>
       <div style={{ overflowX: "auto", marginBottom: 10 }}>
@@ -1247,7 +1587,7 @@ function rowInvalid(m) {
 
 function MeasurementsTable({ measurements, setMeasurements, convencion, setConvencion,
                             showUtm, setShowUtm, zonaUtm, setZonaUtm,
-                            selectedId, onSelect, rowRefs }) {
+                            selectedId, onSelect, rowRefs, setSubconjuntos, conCoordInvalida }) {
   const update = (id, field, value) =>
     setMeasurements((prev) => prev.map((m) => (m.id === id ? { ...m, [field]: value } : m)));
   const addRow = () =>
@@ -1275,6 +1615,7 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
       setMeasurements(r.mediciones);
       setConvencion(r.convencion);
       setZonaUtm(r.zonaUtm);
+      if (setSubconjuntos) setSubconjuntos(r.subconjuntos);
     };
     reader.readAsText(file, "UTF-8");
     e.target.value = "";
@@ -1291,10 +1632,15 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
         alert("No se encontraron filas de datos en el archivo.");
         return;
       }
+      // Con filas corridas (coma decimal + coma separadora) no se perfila por
+      // valores: los números están en la columna equivocada, así que "corregir"
+      // el mapeo con ellos sólo agregaría un aviso falso sobre el de verdad.
+      const gm = guessMapping(tabla.header, tabla.avisos.length ? [] : tabla.rows);
       setPending({
         header: tabla.header,
         rows: tabla.rows,
-        mapping: guessMapping(tabla.header),
+        mapping: gm.mapping,
+        avisos: [...tabla.avisos, ...gm.avisos],
         fileName: file.name,
       });
     };
@@ -1342,8 +1688,18 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
       </div>
       <div style={{ fontSize: 11, color: T.text3, marginBottom: 6 }}>
         Al importar eliges qué columna va a cada campo, así que sirve cualquier encabezado.
-        Separador «,» o «;» y coma decimal se detectan solos (Excel: exportar a CSV primero).
+        Separador «,», «;» o tabulador, coma decimal y punto de miles se detectan solos
+        (Excel: exportar a CSV primero).
       </div>
+      {conCoordInvalida > 0 && (
+        <div style={{ fontSize: 11.5, color: "#8A5A00", background: "#FFF4DB", border: "1px solid #E8C77A",
+                      borderRadius: 6, padding: "5px 8px", marginBottom: 6 }}>
+          {conCoordInvalida} fila{conCoordInvalida > 1 ? "s tienen" : " tiene"} coordenadas fuera de
+          rango (lat &gt; 90°, lon &gt; 180° o UTM fuera de 100.000–1.000.000 m):
+          esas mediciones no se ubican en el mapa. Suele ser una columna UTM leída como lat/lon,
+          o al revés.
+        </div>
+      )}
 
       {pending && (
         <CsvMapper
@@ -1441,14 +1797,42 @@ function App() {
   const [showUtm, setShowUtm] = useState(false);
   const [zonaUtm, setZonaUtm] = useState("19S");
   const [highlightKey, setHighlightKey] = useState(null);
+  // Promedios guardados: {id, groupKey, nombre, color, ids[]}. Se guardan los
+  // ids, no los números, para que el promedio siga los datos si se corrigen.
+  const [subconjuntos, setSubconjuntos] = useState([]);
   const panelRefs = useRef({});
 
-  const { groups } = useMemo(
-    () => computeGroups(measurements, convencion, zonaUtm),
-    [measurements, convencion, zonaUtm]);
+  const { resolved, groups } = useMemo(
+    () => computeGroups(measurements, convencion, zonaUtm, subconjuntos),
+    [measurements, convencion, zonaUtm, subconjuntos]);
+
+  const conCoordInvalida = resolved.filter((r) => r.coordInvalida).length;
 
   const toggleUsar = (id, valor) =>
     setMeasurements((prev) => prev.map((m) => (m.id === id ? { ...m, usar: valor } : m)));
+
+  const guardarPromedio = (group) => {
+    if (!group.usados.length) { alert("No hay mediciones marcadas: marca las que quieres promediar."); return; }
+    const yaHay = subconjuntos.filter((s) => s.groupKey === group.key).length;
+    const nombre = (prompt("Nombre del promedio",
+      `Promedio ${yaHay + 1} (N=${group.usados.length})`) || "").trim();
+    if (!nombre) return;
+    setSubconjuntos((prev) => [...prev, {
+      id: (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()),
+      groupKey: group.key, nombre,
+      color: COLORES_SUB[yaHay % COLORES_SUB.length],
+      ids: group.usados.map((r) => r.id),
+    }]);
+  };
+  const borrarPromedio = (id) => setSubconjuntos((prev) => prev.filter((s) => s.id !== id));
+  // Vuelve a dejar marcadas exactamente las mediciones del promedio guardado.
+  // Sólo toca las de ese grupo: las de los otros grupos se quedan como estaban.
+  const restaurarPromedio = (group, sub) => {
+    const delGrupo = new Set(group.items.map((r) => r.id));
+    const enSub = new Set(sub.ids || []);
+    setMeasurements((prev) => prev.map((m) =>
+      delGrupo.has(m.id) ? { ...m, usar: enSub.has(m.id) } : m));
+  };
 
   // Seleccionar un plano/polo en el estereograma lleva a su fila en la tabla
   const [selectedId, setSelectedId] = useState(null);
@@ -1493,6 +1877,8 @@ function App() {
             selectedId={selectedId}
             onSelect={setSelectedId}
             rowRefs={rowRefs}
+            setSubconjuntos={setSubconjuntos}
+            conCoordInvalida={conCoordInvalida}
           />
         </div>
 
@@ -1500,7 +1886,7 @@ function App() {
           <span style={{ fontSize: 12, color: T.text3 }}>Exportar:</span>
           <button style={btnStyle} disabled={!groups.length}
                   onClick={() => exportarResultadosCSV(groups)}
-                  title="Tabla de resultados por grupo (promedios, Fisher, estrías, coordenadas)">
+                  title="Una fila por promedio: la selección actual y cada promedio guardado (N, Fisher, estrías, coordenadas)">
             CSV de resultados
           </button>
           <button style={btnStyle} onClick={() => window.print()}
@@ -1508,7 +1894,7 @@ function App() {
             PDF
           </button>
           <button style={btnStyle}
-                  onClick={() => exportarProyectoJSON(measurements, convencion, zonaUtm)}
+                  onClick={() => exportarProyectoJSON(measurements, convencion, zonaUtm, subconjuntos)}
                   title="Guarda todo el proyecto para volver a abrirlo después">
             Guardar JSON
           </button>
@@ -1538,6 +1924,9 @@ function App() {
                 onToggleUsar={toggleUsar}
                 selectedId={selectedId}
                 onSelect={seleccionar}
+                onGuardarPromedio={guardarPromedio}
+                onBorrarPromedio={borrarPromedio}
+                onRestaurarPromedio={restaurarPromedio}
               />
             ))}
           </div>

@@ -23,6 +23,24 @@ perder de vista qué se dejó fuera. Se pueden marcar desde la tabla o desde la 
 «Mediciones usadas (n/N)» de cada panel, que además muestra rumbo/manteo y la cinemática de cada
 una.
 
+## Varios promedios por grupo
+
+Un mismo grupo puede tener **varios promedios a la vez**: se marcan las mediciones que se quieren
+usar y se aprieta **+ Guardar este promedio**; después se cambia la selección y se guarda otro. El
+caso típico es promediar las 10 mediciones de una estación y luego, viendo que hay dos poblaciones,
+promediar sólo las 6 de una de ellas: los dos ejercicios quedan a la vista, en el estereograma (cada
+uno con su color, en línea segmentada) y en la lista bajo el panel, cada uno con su **N**, su
+rumbo/manteo, κ, α95 y su promedio de estrías. Los dos salen también al CSV y al PDF.
+
+- **N** aparece en todas partes: el promedio actual dice `N = 6 planos (de 10) · 5 estrías` y cada
+  promedio guardado su propio `N = 10 planos` / `Estrías N = 5`.
+- Se guardan los **ids** de las mediciones, no los números: si después se corrige un manteo mal
+  anotado, el promedio guardado se recalcula solo en vez de quedar con un valor que ya no
+  corresponde a ningún dato. Si se borran mediciones, avisa (`N = 9 planos (se guardó con 10)`).
+- **marcar** vuelve a dejar marcadas exactamente esas mediciones en la tabla (sólo las del grupo;
+  los otros grupos no se tocan). **✕** borra el promedio guardado, no los datos.
+- Van dentro del JSON del proyecto, así que se recuperan al reabrirlo.
+
 ## Estrías (lineaciones sobre el plano)
 
 Cada medición puede llevar una estría con su **trend y plunge** propios (columnas en la tabla y en
@@ -38,17 +56,18 @@ el CSV). Se dibujan como puntos naranjos sobre el plano al que pertenecen, en la
 
 ## Exportar y guardar
 
-- **CSV de resultados** — una fila por grupo con los promedios, Fisher, estrías y coordenadas.
-  Es el equivalente al feature class que producía el script ArcGIS original
-  (`LOCALIDAD, TIPO, N_PUNTOS, RUMBO_PROM, DIP_PROM, DD_PROM, KAPPA, ALPHA95, LAT, LON`), más
-  `n_estrias`, `estria_trend_prom`, `estria_plunge_prom`, `estria_dispersion` y `cinematica`.
+- **CSV de resultados** — una fila **por promedio**: la selección actual de cada grupo y, además,
+  cada promedio guardado (columna `promedio` con su nombre). Es el equivalente al feature class que
+  producía el script ArcGIS original (`LOCALIDAD, TIPO, N_PUNTOS, RUMBO_PROM, DIP_PROM, DD_PROM,
+  KAPPA, ALPHA95, LAT, LON`), más `n_planos`, `n_total_grupo`, `n_estrias`, `estria_trend_prom`,
+  `estria_plunge_prom`, `estria_dispersion` y `cinematica`.
 - **PDF** — abre el diálogo de impresión del navegador («Guardar como PDF»). Se imprime el
   análisis, no la interfaz: se ocultan la barra, la tabla, el mapa y los controles, y se agrega una
   cabecera con la fecha, la convención y la zona. Como los estereogramas son SVG, salen
   **vectoriales** (nítidos a cualquier zoom), que es la razón de usar la impresión del navegador en
   vez de vendorizar una librería de PDF que los rasterizaría.
 - **Guardar JSON / Abrir JSON** — el proyecto completo: las mediciones tal cual quedaron editadas
-  (incluidas las casillas ✓ y las estrías) más la convención y la zona UTM. Esos dos ajustes van
+  (incluidas las casillas ✓ y las estrías), los promedios guardados, más la convención y la zona UTM. Esos dos ajustes van
   dentro del archivo a propósito: sin ellos, un proyecto con rumbos podría reabrirse leído como dip
   direction y girar todos los planos 90°. Al abrir, **reemplaza** los datos actuales (pregunta
   antes), y si el archivo no es un proyecto válido avisa sin tocar nada.
@@ -105,7 +124,23 @@ recursos PWA (instalable en Android/iOS si se sirve por HTTPS).
   `tipo`, `localidad`, `lat`, `lon`, `este`, `norte`), pero es sólo una propuesta: se puede
   cambiar cualquiera, y las columnas que sobran se ignoran. Sólo Orientación y Manteo son
   obligatorias.
-  - Separador `,` o `;` y coma decimal (`-33,45`) se detectan solos.
+  - Separador `,`, `;`, tabulador o `|`: se elige el que hace que las filas tengan las mismas
+    columnas que el encabezado (contar separadores sólo en el encabezado fallaba con tabuladores).
+  - Números como los escribe Excel en español: coma decimal (`-33,45`), punto de miles
+    (`6.298.000`), hemisferio como letra (`33,45 S` → `-33,45`). En un Este/Norte, `346.500` se lee
+    como 346.500 m: no existe una coordenada UTM de 346 m. Un rumbo por cuadrante (`N45W`) **no** se
+    convierte, se deja como texto para que salte como fila inválida en vez de leerse como 45°.
+  - **Las coordenadas se revisan por sus valores, no sólo por el nombre de la columna**: una `X` con
+    346500 es Este UTM y una `X` con −70,65 es longitud. Si el nombre y los valores no calzan, la app
+    reasigna la columna y lo dice; si Este/Norte vienen invertidos, los cambia y lo dice.
+  - Ninguna columna se asigna a dos campos a la vez, y si se hace a mano avisa: era la forma de que
+    el mismo número apareciera en dos casillas de coordenadas.
+  - Si las filas no tienen las mismas columnas que el encabezado (típico de un archivo con coma
+    decimal *y* coma separadora), avisa antes de importar: en ese caso las columnas quedan corridas
+    y las coordenadas se leerían de la columna equivocada.
+  - Ya en la tabla, las coordenadas fuera de rango (lat > 90°, lon > 180°, UTM fuera de
+    100.000–1.000.000 m) se cuentan en un aviso y no se llevan al mapa, en vez de mandar el marcador
+    a cualquier parte.
   - Si el nombre de la columna de orientación contradice el toggle global (por ejemplo una
     columna `rumbo` con el toggle en «Dip Direction»), avisa antes de importar: leer rumbos como
     dip direction gira los planos 90° sin que se note.
