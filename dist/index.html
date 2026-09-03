@@ -1566,6 +1566,24 @@ function computeGroups(measurements, convencion, zonaUtm, subconjuntos) {
   }
 
   const porId = new Map(resolved.map((r) => [r.id, r]));
+
+  // A qué grupo pertenece cada promedio guardado. Se decide por las mediciones
+  // que contiene, no por el groupKey con que se guardó: renombrar una localidad
+  // cambia la clave del grupo y el promedio desaparecía de la vista sin avisar.
+  const grupoDeSub = new Map();
+  for (const s of subconjuntos || []) {
+    const cuenta = new Map();
+    for (const id of s.ids || []) {
+      const r = porId.get(id);
+      if (!r || !r.valid) continue;
+      const k = `${r.localidad}|||${r.tipo}`;
+      cuenta.set(k, (cuenta.get(k) || 0) + 1);
+    }
+    let mejor = s.groupKey, max = 0;
+    for (const [k, c] of cuenta) if (c > max) { max = c; mejor = k; }
+    grupoDeSub.set(s.id, mejor);
+  }
+
   const groups = [];
   for (const g of groupsMap.values()) {
     // El promedio y Fisher salen SÓLO de las mediciones marcadas; las demás se
@@ -1577,7 +1595,7 @@ function computeGroups(measurements, convencion, zonaUtm, subconjuntos) {
     // actualiza también los promedios ya guardados en vez de dejar un número
     // viejo que ya no corresponde a ninguna medición.
     const guardados = (subconjuntos || [])
-      .filter((s) => s.groupKey === g.key)
+      .filter((s) => grupoDeSub.get(s.id) === g.key)
       .map((s) => {
         const items = (s.ids || [])
           .map((id) => porId.get(id))
