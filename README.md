@@ -135,6 +135,10 @@ recursos PWA (instalable en Android/iOS si se sirve por HTTPS).
     reasigna la columna y lo dice; si Este/Norte vienen invertidos, los cambia y lo dice.
   - Ninguna columna se asigna a dos campos a la vez, y si se hace a mano avisa: era la forma de que
     el mismo número apareciera en dos casillas de coordenadas.
+  - **Supuesto «datos de Chile»** (casilla en el panel de mapeo, activada): resuelve lo que sin él es
+    ambiguo. Lat/lon **cambiadas** cuando las dos serían válidas en el mundo (una «latitud» de
+    −70,65 existe —Antártica— pero en Chile es una longitud); **signo perdido** (lat sur, lon oeste);
+    y avisa de las filas que quedan fuera del país. Al desmarcarla, los valores se importan tal cual.
   - Si las filas no tienen las mismas columnas que el encabezado (típico de un archivo con coma
     decimal *y* coma separadora), avisa antes de importar: en ese caso las columnas quedan corridas
     y las coordenadas se leerían de la columna equivocada.
@@ -194,6 +198,13 @@ Dos limitaciones que la app avisa o conviene tener presentes:
 
 Fondo **satelital** (Esri World Imagery) por defecto, con conmutador a calles (OSM). Un marcador
 por grupo en su centroide; al hacer clic salta al panel correspondiente y lo resalta.
+
+**Zona UTM equivocada**: es el error que no da ningún síntoma salvo un mapa raro — corre los puntos
+cientos de kilómetros. Si con la zona elegida los puntos caen fuera de Chile y con otra caen dentro,
+la app lo dice y ofrece el cambio en un botón. La comprobación usa bandas de latitud con los límites
+oeste/este de cada tramo del país (más Rapa Nui, Juan Fernández y San Félix): un rectángulo que
+cubra Chile entero se traga media Argentina y con él este caso no se detectaba. Sirve para errores
+gruesos, no para trazar la frontera: justo al otro lado de la línea (Tacna, Ushuaia) da «dentro».
 
 ## Pendientes conocidos
 

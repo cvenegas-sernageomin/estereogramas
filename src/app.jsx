@@ -389,6 +389,49 @@ function RoseDiagram({ group }) {
 }
 
 // ─── UTM ↔ WGS84 (proj4, mismo enfoque que trazador-planos) ──
+// ─── supuesto: los datos son de Chile ───────────────────────────────
+// Sirve para desambiguar lo que sin ese supuesto no se puede: una latitud de
+// −70,65 es válida en el mundo (Antártica) pero en Chile continental e islas es
+// una longitud. Cubre desde Arica hasta el Cabo de Hornos y de Rapa Nui al
+// límite oriental; el Territorio Antártico Chileno queda fuera a propósito
+// (incluirlo haría inservible la comprobación de latitud).
+const CHILE = { latMin: -56.5, latMax: -17.4, lonMin: -110.0, lonMax: -66.3 };
+
+// Un rectángulo no sirve para decir si un punto está en Chile: el país es largo
+// y angosto, y el rectángulo que lo cubre entero se traga media Argentina (con
+// él, un UTM de zona 18 leído como 19 caía "dentro" y no se avisaba). Bandas de
+// latitud con los límites oeste/este de cada tramo, con margen holgado, más las
+// islas oceánicas aparte. [latN, latS, lonO, lonE]
+const CHILE_BANDAS = [
+  [-17.4, -21.0, -70.9, -68.0],
+  [-21.0, -25.0, -70.9, -66.8],
+  [-25.0, -32.0, -72.2, -68.0],
+  [-32.0, -36.0, -72.9, -69.4],
+  [-36.0, -40.0, -74.3, -70.5],
+  [-40.0, -42.5, -76.1, -71.7],
+  [-42.5, -45.0, -76.1, -71.5],
+  [-45.0, -48.0, -76.1, -71.0],
+  [-48.0, -52.0, -76.1, -69.8],
+  [-52.0, -54.5, -76.1, -68.5],
+  [-54.5, -56.6, -76.1, -66.2],
+];
+// Sirve para cazar errores gruesos (zona UTM equivocada, lat/lon cambiadas, un
+// signo perdido), no para trazar la frontera: justo al otro lado de la línea
+// —Tacna, Ushuaia— da "dentro", y no importa para lo que se usa.
+// Rapa Nui, Sala y Gómez, Juan Fernández, San Félix/San Ambrosio [lat, lon, radio°]
+const CHILE_ISLAS = [[-27.15, -109.43, 1.0], [-26.46, -105.47, 0.6],
+                     [-33.64, -78.85, 0.9], [-26.30, -80.10, 0.6]];
+
+function enChile(lat, lon) {
+  if (!isFinite(lat) || !isFinite(lon)) return false;
+  for (const [n, s, o, e] of CHILE_BANDAS) {
+    if (lat <= n && lat >= s && lon >= o && lon <= e) return true;
+  }
+  return CHILE_ISLAS.some(([la, lo, r]) => Math.abs(lat - la) <= r && Math.abs(lon - lo) <= r);
+}
+// Norte UTM de Chile: ~3,79e6 (Cabo de Hornos) a ~8,06e6 (Arica).
+const CHILE_NORTE_MIN = 3.7e6, CHILE_NORTE_MAX = 8.2e6;
+
 const ZONAS_UTM = {
   "18S": "+proj=utm +zone=18 +south +datum=WGS84 +units=m +no_defs",
   "19S": "+proj=utm +zone=19 +south +datum=WGS84 +units=m +no_defs",
@@ -503,8 +546,38 @@ function computeGroups(measurements, convencion, zonaUtm, subconjuntos) {
       usar: m.usar !== false,          // por defecto entra en el promedio
       lat, lon, stria,
       coordInvalida: coordFueraDeRango || utmFueraDeRango,
+      // Supuesto de Chile: sirve para avisar de un punto que quedó en otra parte
+      fueraDeChile: lat != null && lon != null && !enChile(lat, lon),
     };
   });
+
+  // Zona UTM equivocada: desplaza los puntos cientos de km sin ningún síntoma
+  // más que un mapa raro. Con el supuesto de Chile se puede detectar y proponer
+  // la zona que sí deja los puntos dentro del país.
+  const paresUtm = [];
+  for (const m of measurements) {
+    const E = parseFloat(m.este), N = parseFloat(m.norte);
+    const tieneLatLon = isFinite(parseFloat(m.lat)) && isFinite(parseFloat(m.lon));
+    if (!tieneLatLon && isFinite(E) && isFinite(N) && E >= 1e5 && E <= 1e6 && N >= 0 && N <= 1e7) {
+      paresUtm.push([E, N]);
+    }
+  }
+  let sugerenciaZona = null;
+  if (paresUtm.length) {
+    const dentroCon = (z) => paresUtm.filter(([E, N]) => {
+      const ll = utmToLatLon(E, N, z);
+      return ll && enChile(ll.lat, ll.lon);
+    }).length;
+    const actual = dentroCon(zonaUtm);
+    if (actual < paresUtm.length) {
+      for (const z of Object.keys(ZONAS_UTM)) {
+        if (z !== zonaUtm && dentroCon(z) > actual) {
+          sugerenciaZona = { zona: z, dentro: dentroCon(z), total: paresUtm.length, actual };
+          break;
+        }
+      }
+    }
+  }
 
   const groupsMap = new Map();
   for (const r of resolved) {
@@ -564,7 +637,7 @@ function computeGroups(measurements, convencion, zonaUtm, subconjuntos) {
     });
   }
   groups.sort((a, b) => a.localidad.localeCompare(b.localidad) || a.tipo.localeCompare(b.tipo));
-  return { resolved, groups };
+  return { resolved, groups, sugerenciaZona };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -765,26 +838,85 @@ function ajustarCoordenadas(mapping, header, rows) {
     avisos.push(`«${nom(m.lat)}» y «${nom(m.lon)}» parecen invertidos (la latitud no pasa de 90°): se cambiaron.`);
     const t = m.lat; m.lat = m.lon; m.lon = t; perfilar();
   }
+  // Lat/Lon invertidas con valores que en el mundo serían válidos las dos: sólo
+  // se puede resolver con el supuesto de que el dato es de Chile. Una «latitud»
+  // de 70,65 no existe en Chile, pero sí como longitud. Se compara en valor
+  // absoluto: el signo se arregla aparte.
+  if (m.lat >= 0 && m.lon >= 0 && p.lat && p.lon &&
+      p.lat.mediana >= -CHILE.lonMax && p.lat.mediana <= -CHILE.lonMin &&
+      p.lon.mediana >= -CHILE.latMax && p.lon.mediana <= -CHILE.latMin) {
+    avisos.push(`«${nom(m.lat)}» y «${nom(m.lon)}» están invertidas para datos de Chile ` +
+      `(la latitud va entre ${CHILE.latMin}° y ${CHILE.latMax}°, la longitud entre ` +
+      `${CHILE.lonMin}° y ${CHILE.lonMax}°): se cambiaron.`);
+    const t = m.lat; m.lat = m.lon; m.lon = t; perfilar();
+  }
   return { mapping: m, avisos };
+}
+
+// Chile está al sur y al oeste: lat y lon son negativas. Un archivo que las trae
+// positivas (pasa al copiar desde un GPS o al perder el signo en Excel) ubicaría
+// los puntos en China. Con el supuesto de Chile el signo es recuperable.
+function signoChile(valor, campo) {
+  const v = parseFloat(valor);
+  if (!isFinite(v) || v <= 0) return valor;
+  const dentro = campo === "lat"
+    ? v >= -CHILE.latMax && v <= -CHILE.latMin
+    : v >= -CHILE.lonMax && v <= -CHILE.lonMin;
+  return dentro ? "-" + String(valor).trim() : valor;
 }
 
 /** Avisos de rango del mapeo que está puesto ahora. Van aparte de
  *  ajustarCoordenadas porque se recalculan en vivo: el usuario puede cambiar
  *  cualquier asignación a mano después de la propuesta inicial. */
-function avisosDeRango(mapping, header, rows) {
+function avisosDeRango(mapping, header, rows, chile) {
   const avisos = [];
   const nom = (i) => (header[i] || "").trim() || `columna ${i + 1}`;
-  for (const k of ["este", "norte"]) {
-    const p = perfilColumna(rows, mapping[k], limpiarUtm);
-    if (p && (p.mediana < 1e4 || p.mediana > 1e7)) {
-      avisos.push(`«${nom(mapping[k])}» tiene valores fuera del rango UTM (mediana ${p.mediana}): ` +
-        `esas filas no se van a poder ubicar en el mapa.`);
-    }
+  const pEste = perfilColumna(rows, mapping.este, limpiarUtm);
+  if (pEste && (pEste.mediana < 1e5 || pEste.mediana > 1e6)) {
+    avisos.push(`«${nom(mapping.este)}» tiene valores fuera del rango de un Este UTM ` +
+      `(100.000–1.000.000 m; mediana ${pEste.mediana}): esas filas no se van a poder ubicar en el mapa.`);
+  }
+  const pNorte = perfilColumna(rows, mapping.norte, limpiarUtm);
+  if (pNorte && (pNorte.mediana < CHILE_NORTE_MIN || pNorte.mediana > CHILE_NORTE_MAX)) {
+    avisos.push(`«${nom(mapping.norte)}» tiene valores fuera del rango de un Norte UTM de Chile ` +
+      `(3.700.000–8.200.000 m; mediana ${pNorte.mediana}): revisa el punto de miles o si es una ` +
+      `coordenada del hemisferio norte.`);
   }
   const pLat = perfilColumna(rows, mapping.lat);
   if (pLat && pLat.max > 90) avisos.push(`«${nom(mapping.lat)}» tiene valores mayores que 90: no son latitudes válidas.`);
   const pLon = perfilColumna(rows, mapping.lon);
   if (pLon && pLon.max > 180) avisos.push(`«${nom(mapping.lon)}» tiene valores mayores que 180: no son longitudes válidas.`);
+
+  // Con el supuesto de Chile: signo y ubicación.
+  if (chile) {
+    const positivas = (idx) => {
+      let n = 0;
+      for (const cols of rows) { const v = parseFloat(limpiarNumero(cols[idx])); if (isFinite(v) && v > 0) n++; }
+      return n;
+    };
+    for (const k of ["lat", "lon"]) {
+      if (mapping[k] < 0) continue;
+      const n = positivas(mapping[k]);
+      if (n) {
+        avisos.push(`«${nom(mapping[k])}» (asignada a ${k === "lat" ? "Lat" : "Lon"}) trae ${n} ` +
+          `valor${n > 1 ? "es" : ""} positivo${n > 1 ? "s" : ""}: en Chile la ` +
+          `${k === "lat" ? "latitud es sur" : "longitud es oeste"}, así que va negativa. ` +
+          `Se le puso el signo al importar.`);
+      }
+    }
+    if (mapping.lat >= 0 && mapping.lon >= 0) {
+      let fuera = 0;
+      for (const cols of rows) {
+        const la = parseFloat(signoChile(limpiarNumero(cols[mapping.lat]), "lat"));
+        const lo = parseFloat(signoChile(limpiarNumero(cols[mapping.lon]), "lon"));
+        if (isFinite(la) && isFinite(lo) && !enChile(la, lo)) fuera++;
+      }
+      if (fuera) {
+        avisos.push(`${fuera} fila${fuera > 1 ? "s quedan" : " queda"} fuera de Chile con estas dos ` +
+          `columnas: revisa si están cambiadas o si les falta un dígito.`);
+      }
+    }
+  }
   return avisos;
 }
 
@@ -803,9 +935,10 @@ function guessMapping(header, rows) {
   return ajustarCoordenadas(m, header, rows || []);
 }
 
-function rowsToMeasurements(rows, mapping) {
+function rowsToMeasurements(rows, mapping, chile) {
   const pick = (cols, i) => (i >= 0 && cols[i] != null ? String(cols[i]).trim() : "");
   const num = (cols, i) => limpiarNumero(pick(cols, i));
+  const grados = (cols, i, campo) => (chile ? signoChile(num(cols, i), campo) : num(cols, i));
   return rows.map((cols) => ({
     id: (crypto.randomUUID && crypto.randomUUID()) || String(Math.random()),
     orientacion: num(cols, mapping.orientacion),
@@ -815,8 +948,8 @@ function rowsToMeasurements(rows, mapping) {
     striaPlunge: num(cols, mapping.striaPlunge),
     cinematica: pick(cols, mapping.cinematica),
     localidad: pick(cols, mapping.localidad),
-    lat: num(cols, mapping.lat),
-    lon: num(cols, mapping.lon),
+    lat: grados(cols, mapping.lat, "lat"),
+    lon: grados(cols, mapping.lon, "lon"),
     este: limpiarUtm(pick(cols, mapping.este)),
     norte: limpiarUtm(pick(cols, mapping.norte)),
     usar: true,
@@ -1480,10 +1613,11 @@ const thSticky = {
 // va a qué campo, con vista previa de las primeras filas antes de importar.
 function CsvMapper({ pending, setPending, onImport, onCancel, convencion }) {
   const { header, rows, mapping, fileName, avisos } = pending;
+  const chile = pending.chile !== false;
   const setCol = (key, idx) =>
     setPending({ ...pending, mapping: { ...mapping, [key]: idx } });
   const faltan = CAMPOS_CSV.filter((c) => c.req && mapping[c.key] < 0);
-  const preview = rowsToMeasurements(rows.slice(0, 3), mapping);
+  const preview = rowsToMeasurements(rows.slice(0, 3), mapping, chile);
 
   // Una misma columna asignada a dos campos deja el mismo número en las dos
   // casillas (típico entre Lat/Lon y Este/Norte). Se avisa en vez de dejarlo pasar.
@@ -1514,8 +1648,16 @@ function CsvMapper({ pending, setPending, onImport, onCancel, convencion }) {
             · {fileName} · {rows.length} fila{rows.length !== 1 ? "s" : ""}
           </span>
         </div>
-        <div style={{ fontSize: 11.5, color: T.text3 }}>
-          Elige qué columna del archivo va a cada campo. «—» deja el campo vacío.
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ fontSize: 11.5, color: T.text2, display: "flex", alignItems: "center", gap: 5 }}
+                 title="Con este supuesto se pueden distinguir lat de lon y recuperar el signo; sin él, esos casos son ambiguos">
+            <input type="checkbox" checked={chile}
+                   onChange={(e) => setPending({ ...pending, chile: e.target.checked })} />
+            datos de Chile
+          </label>
+          <div style={{ fontSize: 11.5, color: T.text3 }}>
+            Elige qué columna del archivo va a cada campo. «—» deja el campo vacío.
+          </div>
         </div>
       </div>
 
@@ -1548,7 +1690,7 @@ function CsvMapper({ pending, setPending, onImport, onCancel, convencion }) {
         </div>
       )}
 
-      {[...duplicadas, ...avisosDeRango(mapping, header, rows), ...(avisos || [])].map((a, i) => (
+      {[...duplicadas, ...avisosDeRango(mapping, header, rows, chile), ...(avisos || [])].map((a, i) => (
         <div key={i} style={{ fontSize: 12, color: "#8A5A00", background: "#FFF4DB", border: "1px solid #E8C77A",
                               borderRadius: 6, padding: "6px 9px", marginBottom: 8 }}>
           {a}
@@ -1582,7 +1724,7 @@ function CsvMapper({ pending, setPending, onImport, onCancel, convencion }) {
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <button style={faltan.length ? { ...btnStyle, opacity: 0.5, cursor: "not-allowed" } : btnPrimary}
                 disabled={faltan.length > 0}
-                onClick={() => onImport(rowsToMeasurements(rows, mapping))}>
+                onClick={() => onImport(rowsToMeasurements(rows, mapping, chile))}>
           Importar {rows.length} fila{rows.length !== 1 ? "s" : ""}
         </button>
         <button style={btnStyle} onClick={onCancel}>Cancelar</button>
@@ -1605,7 +1747,8 @@ function rowInvalid(m) {
 
 function MeasurementsTable({ measurements, setMeasurements, convencion, setConvencion,
                             showUtm, setShowUtm, zonaUtm, setZonaUtm,
-                            selectedId, onSelect, rowRefs, setSubconjuntos, conCoordInvalida }) {
+                            selectedId, onSelect, rowRefs, setSubconjuntos, conCoordInvalida,
+                            fueraDeChile, sugerenciaZona }) {
   const update = (id, field, value) =>
     setMeasurements((prev) => prev.map((m) => (m.id === id ? { ...m, [field]: value } : m)));
   const addRow = () =>
@@ -1718,6 +1861,30 @@ function MeasurementsTable({ measurements, setMeasurements, convencion, setConve
           o al revés.
         </div>
       )}
+      {sugerenciaZona && (
+        <div style={{ fontSize: 11.5, color: "#8A5A00", background: "#FFF4DB", border: "1px solid #E8C77A",
+                      borderRadius: 6, padding: "5px 8px", marginBottom: 6,
+                      display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span>
+            Con la zona {zonaUtm}, {sugerenciaZona.total - sugerenciaZona.actual} de{" "}
+            {sugerenciaZona.total} punto{sugerenciaZona.total > 1 ? "s" : ""} UTM
+            {sugerenciaZona.total - sugerenciaZona.actual > 1 ? " caen" : " cae"} fuera de Chile;
+            con {sugerenciaZona.zona} quedan {sugerenciaZona.dentro} dentro. Una zona equivocada
+            corre los puntos cientos de kilómetros.
+          </span>
+          <button style={{ ...btnStyle, padding: "2px 8px", fontSize: 11 }}
+                  onClick={() => setZonaUtm(sugerenciaZona.zona)}>
+            usar {sugerenciaZona.zona}
+          </button>
+        </div>
+      )}
+      {fueraDeChile > 0 && !sugerenciaZona && (
+        <div style={{ fontSize: 11.5, color: "#8A5A00", background: "#FFF4DB", border: "1px solid #E8C77A",
+                      borderRadius: 6, padding: "5px 8px", marginBottom: 6 }}>
+          {fueraDeChile} medición{fueraDeChile > 1 ? "es quedan" : " queda"} fuera de Chile en el
+          mapa: revisa el signo (lat sur, lon oeste), si lat y lon están cambiadas, o la zona UTM.
+        </div>
+      )}
 
       {pending && (
         <CsvMapper
@@ -1820,11 +1987,12 @@ function App() {
   const [subconjuntos, setSubconjuntos] = useState([]);
   const panelRefs = useRef({});
 
-  const { resolved, groups } = useMemo(
+  const { resolved, groups, sugerenciaZona } = useMemo(
     () => computeGroups(measurements, convencion, zonaUtm, subconjuntos),
     [measurements, convencion, zonaUtm, subconjuntos]);
 
   const conCoordInvalida = resolved.filter((r) => r.coordInvalida).length;
+  const fueraDeChile = resolved.filter((r) => r.fueraDeChile).length;
 
   const toggleUsar = (id, valor) =>
     setMeasurements((prev) => prev.map((m) => (m.id === id ? { ...m, usar: valor } : m)));
@@ -1897,6 +2065,8 @@ function App() {
             rowRefs={rowRefs}
             setSubconjuntos={setSubconjuntos}
             conCoordInvalida={conCoordInvalida}
+            fueraDeChile={fueraDeChile}
+            sugerenciaZona={sugerenciaZona}
           />
         </div>
 
