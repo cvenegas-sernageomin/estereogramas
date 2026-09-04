@@ -23,6 +23,22 @@ perder de vista qué se dejó fuera. Se pueden marcar desde la tabla o desde la 
 «Mediciones usadas (n/N)» de cada panel, que además muestra rumbo/manteo y la cinemática de cada
 una.
 
+## Promedio de planos (datos axiales)
+
+El polo de un plano y su antípoda describen **el mismo plano**: son datos axiales. Promediarlos
+como vectores se cancela cuando los planos son subverticales y mantean a lados opuestos — 88° al E
+y 87° al W son casi el mismo plano, pero sus polos quedan casi antípodas. Medido: seis planos de
+85–89° daban **manteo 0,9°** (subhorizontal) con κ 0,7 y α95 180°.
+
+Ahora el promedio lleva primero cada polo al hemisferio del autovector principal del tensor de
+orientación (invariante ante `v → −v`) y recién ahí calcula el promedio vectorial de Fisher, con la
+misma corrección antes de κ/α95. Los mismos seis planos dan **89,2°** con κ 499 y α95 2,7°. Cuando
+no hay polos antípodas —datos de un solo lado— el resultado es **idéntico** al de antes: se
+comprobó con siete conjuntos, incluidos los de ejemplo de la app.
+
+Si α95 sale mayor que 20° el panel lo advierte: un promedio así no describe ninguna actitud real y
+casi siempre significa que en el grupo hay más de una población (ver los promedios guardados, abajo).
+
 ## Varios promedios por grupo
 
 Un mismo grupo puede tener **varios promedios a la vez**: se marcan las mediciones que se quieren
@@ -99,11 +115,21 @@ dedo es imposible.
 
 Sección independiente (cruza dos grupos, no vive dentro de una tarjeta): elige dos grupos como
 "Limbo 1" y "Limbo 2" y calcula:
-- **Plano axial** — bisectriz de los polos (`normalize(n1+n2)`), sin depender del orden de los
-  limbos (el manteo siempre se guarda 0–90°, así que el polo de cada medición ya cae en el mismo
-  hemisferio por construcción — evita el bug de orden de limbos que tuvo años Stereonet 11).
 - **Eje de pliegue** — línea de intersección de los dos limbos (`normalize(n1×n2)`), como
   trend/plunge.
+- **Plano axial** — el que contiene el eje y la **bisectriz de las dos líneas de máxima pendiente**,
+  que es la que bisecta el ángulo interlimbo.
+
+  Dos limbos tienen siempre **dos** planos bisectores, perpendiculares entre sí, y los dos contienen
+  el eje. Cuál es el axial depende de dónde esté el núcleo del pliegue, y eso no se sabe sólo con
+  dos actitudes. La construcción con las líneas de máxima pendiente da el correcto para pliegues
+  rectos, inclinados y volcados; en uno **recumbente** el axial es la otra bisectriz, que se dibuja
+  segmentada y se lista al lado.
+
+  Antes se bisectaban los **polos** (`normalize(n1+n2)`), que es justamente la otra bisectriz: para
+  un antiforme de limbos 30°E y 30°W daba un plano axial **horizontal**, cuando es vertical; para
+  70°E/20°W daba 25°E en vez de 65°W. Contrastado contra un cálculo independiente de la bisectriz en
+  la sección vertical (trigonometría plana, sin polos ni productos cruz) en ocho pliegues sintéticos.
 
 ## Uso
 

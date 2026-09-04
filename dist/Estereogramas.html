@@ -1154,18 +1154,45 @@ function greatCircleXY(dd, dip, nPts = 61) {
   return pts;
 }
 
-// ─── promedio vectorial + estadística de Fisher ─────────────
-function meanNormal(normales) {
+// ─── promedio de polos + estadística de Fisher ──────────────
+// Los polos de un plano son datos AXIALES: el polo y su antípoda describen el
+// mismo plano. Con planos subverticales que mantean a lados opuestos (88° al E y
+// 87° al W son casi el mismo plano) los polos quedan casi antípodas y el promedio
+// vectorial se cancela: seis planos de 85–89° daban un promedio de 0,9° de manteo,
+// subhorizontal. El autovector principal del tensor de orientación es invariante
+// ante v → −v, así que no se cancela; para datos bien agrupados da exactamente lo
+// mismo que el promedio vectorial.
+// El autovector sólo se usa para decidir el hemisferio; el promedio en sí sigue
+// siendo el vectorial de Fisher, para que calce con el κ/α95 que se muestra al
+// lado y para que los datos de un solo lado den exactamente el mismo número que
+// antes (el autovector, con datos dispersos, se corre unas décimas de grado).
+function meanNormalAxial(normales) {
   if (!normales.length) return null;
+  if (normales.length === 1) return normales[0].slice();
+  const { vectors } = jacobi3x3(orientationTensor(normales));
+  let e1 = vectors[0];
+  if (e1[2] < 0) e1 = [-e1[0], -e1[1], -e1[2]];
+  const flip = alHemisferioDe(normales, e1);
   let sx = 0, sy = 0, sz = 0;
-  for (const [x, y, z] of normales) { sx += x; sy += y; sz += z; }
+  for (const [x, y, z] of flip) { sx += x; sy += y; sz += z; }
   const norm = Math.sqrt(sx * sx + sy * sy + sz * sz);
-  if (norm < 1e-12) return null;
-  return [sx / norm, sy / norm, sz / norm];
+  if (norm < 1e-9) return e1;                     // guirnalda perfecta: queda el eje
+  let mn = [sx / norm, sy / norm, sz / norm];
+  if (mn[2] < 0) mn = [-mn[0], -mn[1], -mn[2]];   // polo al hemisferio inferior
+  return mn;
 }
 
-function fisherStats(normales) {
+// Lleva cada polo al hemisferio del promedio. Sin esto la suma vectorial de
+// Fisher se cancela por el mismo motivo axial y κ sale ~0 con α95 = 180°.
+function alHemisferioDe(normales, ref) {
+  if (!ref) return normales;
+  return normales.map((v) =>
+    (v[0] * ref[0] + v[1] * ref[1] + v[2] * ref[2]) < 0 ? [-v[0], -v[1], -v[2]] : v);
+}
+
+function fisherStats(normales, ref) {
   if (!normales || normales.length < 2) return { R: null, kappa: null, alpha95: null };
+  normales = alHemisferioDe(normales, ref);
   const N = normales.length;
   let sx = 0, sy = 0, sz = 0;
   for (const [x, y, z] of normales) { sx += x; sy += y; sz += z; }
@@ -1306,6 +1333,45 @@ function crossNormalize(a, b) {
   const norm = Math.sqrt(cx * cx + cy * cy + cz * cz);
   if (norm < 1e-9) return null; // planos paralelos: no hay eje único
   return [cx / norm, cy / norm, cz / norm];
+}
+
+// Línea de máxima pendiente de un plano (x=este, y=norte, z=abajo).
+function dipVector(dd, dip) {
+  const ddR = toRad(dd), dR = toRad(dip);
+  return [Math.sin(ddR) * Math.cos(dR), Math.cos(ddR) * Math.cos(dR), Math.sin(dR)];
+}
+
+/** Plano axial de un pliegue a partir de las actitudes de sus dos limbos.
+ *
+ *  Dos planos que se cortan tienen DOS planos bisectores, perpendiculares entre
+ *  sí, y los dos contienen el eje de pliegue. El axial es el que bisecta el
+ *  ángulo interlimbo, y eso se construye con las líneas de máxima pendiente: la
+ *  bisectriz de las dos líneas de máxima pendiente yace en el plano axial (es la
+ *  traza axial descendiendo desde la charnela). Bisectar los POLOS —que es lo que
+ *  hacía antes— entrega la otra bisectriz: para un antiforme de limbos 30°E y
+ *  30°W daba un plano axial horizontal, cuando es vertical.
+ *
+ *  Devuelve las dos bisectrices. Cuál es la axial depende de dónde está el núcleo
+ *  del pliegue, y eso no se puede saber sólo con dos actitudes: la construcción
+ *  de las líneas de máxima pendiente da la respuesta correcta para pliegues rectos
+ *  o inclinados (el caso habitual); un pliegue recumbente necesita la otra. */
+function planosBisectores(dd1, dip1, dd2, dip2) {
+  const n1 = ddDipToNormal(dd1, dip1), n2 = ddDipToNormal(dd2, dip2);
+  const eje = crossNormalize(n1, n2);
+  if (!eje) return null;                          // limbos paralelos
+  const d1 = dipVector(dd1, dip1), d2 = dipVector(dd2, dip2);
+  const suma = [d1[0] + d2[0], d1[1] + d2[1], d1[2] + d2[2]];
+  const largo = Math.sqrt(suma[0] ** 2 + suma[1] ** 2 + suma[2] ** 2);
+  if (largo < 1e-9) return null;                  // dos limbos horizontales opuestos
+  const bis = [suma[0] / largo, suma[1] / largo, suma[2] / largo];
+  const nAxial = crossNormalize(eje, bis);
+  if (!nAxial) return null;                       // bisectriz paralela al eje
+  const nOtro = crossNormalize(eje, nAxial);      // el otro bisector, perpendicular
+  const comoPlano = (n) => {
+    const [dd, dip] = normalToDdDip(n);
+    return { dd, dip, strike: ddToStrike(dd) };
+  };
+  return { axial: comoPlano(nAxial), otro: nOtro ? comoPlano(nOtro) : null, eje };
 }
 
 // Vector unitario de una LÍNEA a partir de trend/plunge (x=este, y=norte, z=abajo).
@@ -1509,10 +1575,10 @@ const COLORES_SUB = ["#0F8B6C", "#B5179E", "#6D8B00", "#8A5A00", "#4A5A80", "#00
 // para la selección actual y para cada promedio guardado.
 function estadisticaDeItems(items) {
   const normales = items.map((r) => ddDipToNormal(r.dd, r.dip));
-  const mn = meanNormal(normales);
+  const mn = meanNormalAxial(normales);
   let ddMean = null, dipMean = null, strikeMean = null;
   if (mn) { [ddMean, dipMean] = normalToDdDip(mn); strikeMean = ddToStrike(ddMean); }
-  const { R, kappa, alpha95 } = fisherStats(normales);
+  const { R, kappa, alpha95 } = fisherStats(normales, mn);
   const withCoords = items.filter((r) => r.lat != null && r.lon != null);
   const centroid = withCoords.length
     ? {
@@ -2055,15 +2121,17 @@ function exportarResultadosCSV(groups) {
                 "manteo_prom", "dd_prom", "kappa", "alpha95", "n_estrias", "estria_trend_prom",
                 "estria_plunge_prom", "estria_dispersion", "lat", "lon", "cinematica"];
   const r1 = (x, d = 0) => (x == null || isNaN(x) ? "" : x.toFixed(d));
+  // Azimuts: se redondean dentro de [0,360) para no escribir "360" por 359,9996
+  const az = (x, d = 0) => (x == null || isNaN(x) ? "" : mod360(parseFloat(x.toFixed(d))).toFixed(d));
   // Una fila por promedio: la selección actual y, además, cada promedio guardado
   // del grupo. Así quedan en el mismo archivo el ejercicio con todos los datos y
   // el que usó sólo un subconjunto.
   const fila = (g, nombre, e) => [
     g.localidad, g.tipo, nombre, e.n, g.nTotal,
-    r1(e.strikeMean), r1(e.dipMean), r1(e.ddMean),
+    az(e.strikeMean), r1(e.dipMean), az(e.ddMean),
     r1(e.kappa), r1(e.alpha95, 1),
     e.nEstrias || "",
-    e.striaMean ? r1(e.striaMean.trend) : "",
+    e.striaMean ? az(e.striaMean.trend) : "",
     e.striaMean ? r1(e.striaMean.plunge) : "",
     e.striaMean ? r1(e.striaMean.dispersion, 1) : "",
     e.centroid ? e.centroid.lat.toFixed(5) : "",
@@ -2220,6 +2288,11 @@ function MapPanel({ groups, onMarkerClick }) {
 // PANEL DE ESTEREOGRAMA por grupo (localidad, tipo)
 // ═══════════════════════════════════════════════════════════════
 function fmt(n, d = 0) { return n == null || isNaN(n) ? "—" : n.toFixed(d); }
+// Para azimuts: 359,9996° se imprimía como «360°». Se redondea y se vuelve a [0,360).
+function fmtAz(n, d = 0) {
+  if (n == null || isNaN(n)) return "—";
+  return mod360(parseFloat(n.toFixed(d))).toFixed(d);
+}
 
 function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, onSelect,
                           onGuardarPromedio, onBorrarPromedio, onRestaurarPromedio }) {
@@ -2303,7 +2376,7 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
               <polyline key={"h" + d.r.id} points={d.linea} fill="none" stroke="transparent"
                         strokeWidth="0.06" style={{ cursor: "pointer" }}
                         onClick={() => onSelect(sel(d.r.id) ? null : d.r.id)}>
-                <title>{`${fmt(ddToStrike(d.r.dd))}° / ${fmt(d.r.dip)}°`}</title>
+                <title>{`${fmtAz(ddToStrike(d.r.dd))}° / ${fmt(d.r.dip)}°`}</title>
               </polyline>
             ))}
           </svg>
@@ -2328,7 +2401,7 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
               <circle key={"h" + d.r.id} cx={d.polo[0]} cy={-d.polo[1]} r="0.055" fill="transparent"
                       style={{ cursor: "pointer" }}
                       onClick={() => onSelect(sel(d.r.id) ? null : d.r.id)}>
-                <title>{`${fmt(ddToStrike(d.r.dd))}° / ${fmt(d.r.dip)}°`}</title>
+                <title>{`${fmtAz(ddToStrike(d.r.dd))}° / ${fmt(d.r.dip)}°`}</title>
               </circle>
             ))}
           </svg>
@@ -2361,13 +2434,24 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
         display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4,
         fontSize: 11, fontFamily: MONO, color: T.text2,
       }}>
-        <div>Rumbo {fmt(group.strikeMean)}°</div>
+        <div>Rumbo {fmtAz(group.strikeMean)}°</div>
         <div>Manteo {fmt(group.dipMean)}°</div>
-        <div>DD {fmt(group.ddMean)}°</div>
+        <div>DD {fmtAz(group.ddMean)}°</div>
         <div>&kappa; {group.kappa != null ? fmt(group.kappa) : "—"}</div>
         <div>&alpha;95 {group.alpha95 != null ? fmt(group.alpha95, 1) + "°" : "—"}</div>
         <div>{group.centroid ? `${fmt(group.centroid.lat, 4)}, ${fmt(group.centroid.lon, 4)}` : "sin coords"}</div>
       </div>
+
+      {/* Un promedio con α95 grande no describe ninguna actitud real: casi
+          siempre significa que en el grupo hay más de una población. */}
+      {group.alpha95 != null && group.alpha95 > 20 && group.n >= 3 && (
+        <div style={{ fontSize: 11.5, color: "#8A5A00", background: "#FFF4DB", border: "1px solid #E8C77A",
+                      borderRadius: 6, padding: "5px 8px", marginTop: 6 }}>
+          Dispersión alta (κ {fmt(group.kappa)} · α95 {fmt(group.alpha95, 1)}°): este promedio no
+          representa una actitud única. Suele haber más de una población en el mismo grupo —por
+          ejemplo dos limbos—; conviene separarlas y guardar un promedio para cada una.
+        </div>
+      )}
 
       {group.cinematicas.length > 0 && (
         <div style={{ marginTop: 6, fontSize: 11, color: T.text2 }}>
@@ -2379,7 +2463,7 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
         <div style={{ marginTop: 6, fontSize: 11.5, fontFamily: MONO, color: T.text2 }}>
           <span style={{ color: T.estria }}>●</span> Estrías ({group.nEstrias}):{" "}
           {group.striaMean
-            ? <>promedio Trend {fmt(group.striaMean.trend)}° · Plunge {fmt(group.striaMean.plunge)}°
+            ? <>promedio Trend {fmtAz(group.striaMean.trend)}° · Plunge {fmt(group.striaMean.plunge)}°
                 <span style={{ color: T.text3 }}> · dispersión {fmt(group.striaMean.dispersion, 1)}°</span></>
             : <span style={{ color: T.text3 }}>se necesitan 2 para promediar</span>}
           {group.striasFueraDePlano > 0 && (
@@ -2426,7 +2510,7 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
                 <div style={{ fontSize: 11, fontFamily: MONO, color: T.text2, marginTop: 2 }}>
                   {s.ddMean == null
                     ? <span style={{ color: T.danger }}>sin mediciones válidas</span>
-                    : <>Rumbo {fmt(s.strikeMean)}° · Manteo {fmt(s.dipMean)}° · DD {fmt(s.ddMean)}°
+                    : <>Rumbo {fmtAz(s.strikeMean)}° · Manteo {fmt(s.dipMean)}° · DD {fmtAz(s.ddMean)}°
                         {" · "}κ {s.kappa != null ? fmt(s.kappa) : "—"}
                         {" · "}α95 {s.alpha95 != null ? fmt(s.alpha95, 1) + "°" : "—"}</>}
                 </div>
@@ -2434,7 +2518,7 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
                   <div style={{ fontSize: 11, fontFamily: MONO, color: T.text2 }}>
                     Estrías N = {s.nEstrias}
                     {s.striaMean
-                      ? <> · Trend {fmt(s.striaMean.trend)}° · Plunge {fmt(s.striaMean.plunge)}°
+                      ? <> · Trend {fmtAz(s.striaMean.trend)}° · Plunge {fmt(s.striaMean.plunge)}°
                           <span style={{ color: T.text3 }}> · dispersión {fmt(s.striaMean.dispersion, 1)}°</span></>
                       : <span style={{ color: T.text3 }}> · se necesitan 2 para promediar</span>}
                   </div>
@@ -2466,7 +2550,7 @@ function StereonetPanel({ group, highlighted, setRef, onToggleUsar, selectedId, 
                 <input type="checkbox" checked={r.usar}
                        onChange={(e) => onToggleUsar(r.id, e.target.checked)} />
                 <span style={{ minWidth: 96 }}>
-                  {fmt(ddToStrike(r.dd))}° / {fmt(r.dip)}°
+                  {fmtAz(ddToStrike(r.dd))}° / {fmt(r.dip)}°
                 </span>
                 <span style={{ fontFamily: SANS, fontSize: 11, flex: 1, minWidth: 0, overflow: "hidden",
                                textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -2518,12 +2602,10 @@ function AxialPlaneFinder({ groups }) {
   const g2 = valid.find((g) => g.key === k2) || valid[1];
   const sameGroup = g1.key === g2.key;
 
-  const n1 = ddDipToNormal(g1.ddMean, g1.dipMean);
-  const n2 = ddDipToNormal(g2.ddMean, g2.dipMean);
-  const mn = !sameGroup ? meanNormal([n1, n2]) : null;
-  const axial = mn ? (() => { const [dd, dip] = normalToDdDip(mn); return { dd, dip, strike: ddToStrike(dd) }; })() : null;
-  const crossN = !sameGroup ? crossNormalize(n1, n2) : null;
-  const axis = crossN ? (() => { const [trend, plunge] = vectorToTrendPlunge(crossN); return { trend, plunge }; })() : null;
+  const bis = sameGroup ? null : planosBisectores(g1.ddMean, g1.dipMean, g2.ddMean, g2.dipMean);
+  const axial = bis ? bis.axial : null;
+  const otroBisector = bis ? bis.otro : null;
+  const axis = bis ? (() => { const [trend, plunge] = vectorToTrendPlunge(bis.eje); return { trend, plunge }; })() : null;
 
   // Cilindricidad sobre TODOS los polos de ambos limbos (respetando las casillas ✓),
   // no sobre los dos planos promedio.
@@ -2533,6 +2615,7 @@ function AxialPlaneFinder({ groups }) {
   const limb1Line = svgPoints(greatCircleXY(g1.ddMean, g1.dipMean));
   const limb2Line = svgPoints(greatCircleXY(g2.ddMean, g2.dipMean));
   const axialLine = axial ? svgPoints(greatCircleXY(axial.dd, axial.dip)) : null;
+  const otroLine = otroBisector ? svgPoints(greatCircleXY(otroBisector.dd, otroBisector.dip)) : null;
   const axisPt = axis ? equalAreaProject(axis.trend, axis.plunge) : null;
 
   const labelFor = (g) => `${g.localidad} · ${g.tipo} (n=${g.n})`;
@@ -2557,7 +2640,7 @@ function AxialPlaneFinder({ groups }) {
 
       {sameGroup ? (
         <div style={{ color: T.danger, fontSize: 12.5 }}>Elige dos grupos distintos.</div>
-      ) : !crossN || !axial ? (
+      ) : !bis ? (
         <div style={{ color: T.danger, fontSize: 12.5 }}>Los dos limbos son paralelos: no hay un eje de pliegue único.</div>
       ) : (
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
@@ -2565,6 +2648,8 @@ function AxialPlaneFinder({ groups }) {
             <SchmidtNetGrid />
             <polyline points={limb1Line} fill="none" stroke={T.accent} strokeWidth="0.016" />
             <polyline points={limb2Line} fill="none" stroke="#2E8B7A" strokeWidth="0.016" />
+            {otroLine && <polyline points={otroLine} fill="none" stroke={T.text3}
+                                   strokeWidth="0.014" strokeDasharray="0.05 0.03" />}
             {axialLine && <polyline points={axialLine} fill="none" stroke={T.danger} strokeWidth="0.022" />}
             {axisPt && <circle cx={axisPt[0]} cy={-axisPt[1]} r="0.045" fill={T.danger} stroke="#fff" strokeWidth="0.008" />}
           </svg>
@@ -2572,12 +2657,27 @@ function AxialPlaneFinder({ groups }) {
             <div><span style={{ color: T.accent }}>■</span> Limbo 1: {labelFor(g1)}</div>
             <div><span style={{ color: "#2E8B7A" }}>■</span> Limbo 2: {labelFor(g2)}</div>
             <div style={{ marginTop: 6 }}>
-              <span style={{ color: T.danger }}>■</span> Plano axial — Rumbo {fmt(axial.strike)}° · Manteo {fmt(axial.dip)}° · DD {fmt(axial.dd)}°
+              <span style={{ color: T.danger }}>■</span> Plano axial — Rumbo {fmtAz(axial.strike)}° · Manteo {fmt(axial.dip)}° · DD {fmtAz(axial.dd)}°
             </div>
             <div>
-              <span style={{ color: T.danger }}>●</span> Eje de pliegue — Trend {fmt(axis.trend)}° · Plunge {fmt(axis.plunge)}°
+              <span style={{ color: T.danger }}>●</span> Eje de pliegue — Trend {fmtAz(axis.trend)}° · Plunge {fmt(axis.plunge)}°
             </div>
+            {otroBisector && (
+              <div style={{ color: T.text3 }}>
+                <span>┄</span> Otra bisectriz — Rumbo {fmtAz(otroBisector.strike)}° · Manteo {fmt(otroBisector.dip)}°
+              </div>
+            )}
           </div>
+        </div>
+      )}
+
+      {!sameGroup && bis && (
+        <div style={{ fontSize: 11.5, color: T.text3, marginTop: 8, fontFamily: SANS }}>
+          El plano axial sale de la bisectriz de las dos líneas de máxima pendiente, que es la que
+          bisecta el ángulo interlimbo. Dos limbos tienen siempre <b>dos</b> planos bisectores
+          perpendiculares entre sí, y los dos contienen el eje; con sólo las actitudes no se sabe
+          dónde está el núcleo del pliegue. El que se muestra es el correcto para pliegues rectos o
+          inclinados; en un pliegue <b>recumbente</b> el axial es la otra bisectriz.
         </div>
       )}
 

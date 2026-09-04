@@ -1,7 +1,7 @@
 // Service worker — cachea la app (HTML autocontenido) para uso offline.
 // La app es un único HTML con todo embebido, así que cachear index.html
 // y los recursos de la PWA alcanza para funcionar sin conexión.
-const CACHE = "estereo-20260903230414";
+const CACHE = "estereo-20260904085726";
 const CORE = [
   "./index.html",
   "./manifest.webmanifest",
