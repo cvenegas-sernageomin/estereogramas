@@ -1,5 +1,7 @@
 # Estereogramas — Análisis Estructural (PWA)
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23196786.svg)](https://doi.org/10.5281/zenodo.23196786)
+
 PWA offline para análisis estructural: estereogramas de Schmidt (planos, polos y diagrama de
 rosa) por localidad+tipo, con estadística de Fisher (κ, α95), un buscador de plano axial de
 pliegues y un mapa Leaflet con la ubicación de cada grupo. Redibuja en vivo al editar la tabla —
@@ -247,4 +249,4 @@ Las librerías de terceros incluidas (por ejemplo en `vendor/`) conservan sus pr
 
 Cita sugerida:
 
-> SERNAGEOMIN / Venegas Benavides, C. (2026). Estereogramas: análisis estructural [aplicación web]. https://cvenegas-sernageomin.github.io/estereogramas/
+> SERNAGEOMIN / Venegas Benavides, C. (2026). Estereogramas: análisis estructural [aplicación web]. https://cvenegas-sernageomin.github.io/estereogramas/ · DOI: https://doi.org/10.5281/zenodo.23196786
