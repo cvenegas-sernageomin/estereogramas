@@ -1,0 +1,31 @@
+{
+  "upload_type": "software",
+  "title": "Estereogramas: análisis estructural",
+  "description": "<p>Aplicación web instalable (PWA) de análisis estructural: estereogramas de Schmidt, diagramas de rosa, estadística de Fisher, buscador de plano axial y mapa de ubicación.</p><p>Publicado en https://cvenegas-sernageomin.github.io/estereogramas/</p><p>La licencia CC BY-NC 4.0 cubre el trabajo original de los autores. No cubre el material de terceros:</p><ul><li>Las librerías de terceros incluidas (por ejemplo en vendor/) conservan sus propias licencias.</li></ul>",
+  "creators": [
+    {
+      "name": "Servicio Nacional de Geología y Minería (SERNAGEOMIN)"
+    },
+    {
+      "name": "Venegas Benavides, Carlos",
+      "affiliation": "Servicio Nacional de Geología y Minería (SERNAGEOMIN)"
+    }
+  ],
+  "license": "cc-by-nc-4.0",
+  "access_right": "open",
+  "language": "spa",
+  "keywords": [
+    "geología estructural",
+    "estereogramas",
+    "red de Schmidt",
+    "PWA",
+    "SERNAGEOMIN"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://cvenegas-sernageomin.github.io/estereogramas/",
+      "relation": "isDocumentedBy",
+      "resource_type": "other"
+    }
+  ]
+}

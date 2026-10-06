@@ -236,3 +236,15 @@ gruesos, no para trazar la frontera: justo al otro lado de la línea (Tacna, Ush
 
 - Marcar puntos directamente en el mapa (hoy solo tabla/CSV).
 - Sin soporte .xlsx (exportar a CSV desde Excel).
+
+## Licencia y cómo citar
+
+© 2026 SERNAGEOMIN / Carlos Venegas Benavides. El trabajo original de este repositorio se distribuye bajo
+**[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/deed.es)**: se puede compartir y adaptar
+**citando la fuente** y **sin fines comerciales**. Ver [`LICENSE`](LICENSE).
+
+Las librerías de terceros incluidas (por ejemplo en `vendor/`) conservan sus propias licencias.
+
+Cita sugerida:
+
+> SERNAGEOMIN / Venegas Benavides, C. (2026). Estereogramas: análisis estructural [aplicación web]. https://cvenegas-sernageomin.github.io/estereogramas/
